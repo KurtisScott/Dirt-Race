@@ -139,7 +139,7 @@ function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean;
   let bumps = 0;
   let hits = 0;
   const offs = [events.on('animal:bump', () => bumps++), events.on('obstacle:hit', () => hits++)];
-  const systems = [world, v];
+  const systems: import("../src/core/types").System[] = [world, v];
   let s = 0;
   let lastCp = -1;
   let resets = 0;
