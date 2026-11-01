@@ -12,7 +12,7 @@ import { VEHICLES, createVehicle } from './vehicles';
 import { createWorld } from './world';
 import { RaceController } from './race';
 import { ChaseCamera, Effects } from './fx';
-import { AudioSystem } from './audio';
+import { AudioSystem, mountVolumeControls } from './audio';
 import { UI } from './ui';
 import { applyPendingUpdate, registerPWA } from './pwa';
 
@@ -124,6 +124,10 @@ async function boot(): Promise<void> {
       ].join('\n'),
   });
 
+  // Music / Effects volume rows on the pause/settings screen (persisted in settings).
+  const settingsGrid = ui.pause.el.querySelector('.settings-grid');
+  if (settingsGrid) mountVolumeControls(settingsGrid);
+
   const togglePause = (force?: boolean): void => {
     if (race.phase === 'title' || race.phase === 'calibrate') return;
     paused = force ?? !paused;
@@ -157,7 +161,7 @@ async function boot(): Promise<void> {
   document.body.classList.add('ready');
 
   // Dev/test hook (used by scripts/smoke.mjs). Harmless in production.
-  (window as unknown as { __dirt: unknown }).__dirt = { loop, player, input, race, quality, renderer, ui, world };
+  (window as unknown as { __dirt: unknown }).__dirt = { loop, player, input, race, quality, renderer, ui, world, audio, events };
 }
 
 boot().catch((err) => {

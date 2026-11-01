@@ -45,3 +45,25 @@ Decisions made without the family (they're on a flight). Each one is easy to rev
 
 ### Not done in M1 (owned by other agents per ARCHITECTURE.md)
 - Real track, terrain, obstacles, animals, hill (world). Race rules, spin, countdown, results (race/ui). AI. Audio. Particles and skid marks (fx). Per-kind vehicle models.
+
+## Audio, 2026-11-01
+
+- **Everything is synthesized**, with no audio files shipped. Loops and one-shots are rendered into `AudioBuffer`s in plain JS (deterministic, seeded), lazily or in ~6 ms idle chunks starting 250 ms after the Start tap. That's about 1 s of total CPU on a desktop, spread out. Loops render at 24 kHz and one-shots at 32 kHz, and the context resamples. Buffer memory is about 3 MB. Zero bytes of download. Music is sequenced live from short oscillator notes.
+- **Engines = one looping buffer per vehicle kind**, pitched by `playbackRate` (rpm) and brightened by one low-pass (rpm + throttle). Cost per car: 1 source + 1 biquad + 1 gain + 1 panner. Main-thread cost of `AudioSystem.update` is about 0.016 ms/frame (measured headless). AudioParam updates are skipped when the change is tiny. The loop length is an integer number of firing periods, so it loops seamlessly (seam check in tests). Characters:
+  - muscle **v8**: uneven cross-plane burble, pops on lift-off
+  - pickup **truck**: smoother, lower V8
+  - **monster**: 30 Hz, sub-heavy
+  - **sport**: smooth flat-six with tonal scream, about 5× rev range
+  - **buggy**: buzzy twin with a nasal whine
+  - grandma **sedan**: weedy 4-cylinder with 9% misfires, a slow pitch wobble, a cough on lift-off and an occasional idle cough (the comedic one)
+- **CPU car** uses the same engine voice, attenuated `0.75/(1+d/12)`, panned relative to the player's heading and low-passed with distance. The player's car is the listener (the camera follows it).
+- **Tyres:** one surface bed per car (asphalt road roar is quiet; dirt, gravel, mud, sand and water are louder), crossfaded on change and scaled by speed and slip. Squeal comes **only from asphalt slip** (`wheels[].slip` above about 0.35). Off-road slip makes the bed louder instead. Entering water, mud or gravel above 3 m/s also triggers a one-shot splash, squelch or crunch.
+- **Landing** thumps scale with `impact` (soft below about 7 m/s, hard with metal clank above). Big air (>0.45 s) gives a soft whoosh.
+- **Animals** sound cartoonish and friendly: quack, squeak, bleat (deer), a gentle grunt (bear), a croc "clack-clack + purr", plus a boing on contact. They are never hurt or pained.
+- **Volumes:** use `settings.musicVolume` / `sfxVolume` (persisted by `core/settings`, which already wraps localStorage in try/catch). The gain curve is squared for a usable low end. Music sits at 0.55× under effects. Settings get **Off / Low / Med / High** segmented buttons instead of sliders (big kid-sized targets that match the existing UI), mounted into the pause screen via `mountVolumeControls()` with one line in main.ts.
+- **Mute:** pausing ramps master to 0 in 40 ms (UI clicks still play). Hiding the app suspends the context (already wired in main). The context resumes on the next touch, keydown, `pageshow` or `focus`, and on `statechange` (covers iOS "interrupted" after calls or Siri). A DynamicsCompressor limiter on the output prevents clipping when many sounds stack. At most 12 one-shots play at once, with per-sound cooldowns.
+- **Music:** hand-written (not random) 16-bar A-A-B-C songs, so they're pleasant on repeat. Menu: 104 bpm swing, music-box lead, walking bass, light drums. Race: 146 bpm, square lead, octave bass, full drums. A lead-less arpeggio "break" section gives the ears a rest. No music during the countdown (the beeps need to be heard). Results bring the menu loop back after 2.8 s so the cheer and jingle land first.
+- **Countdown voice slot:** the build lists `public/audio/countdown-{3,2,1,go}.{m4a,mp3,wav,ogg}` (in `vite.config.ts` → `__COUNTDOWN_VOICE__`), so the runtime never fetches missing files (no 404s, works offline). The service worker precaches them. Any missing clip falls back to its beep. GO plays the clip plus a quieter horn. `decodeAudioData` uses the callback form for older Safari. **For Brooks:** record each word on the iPad (Voice Memos), trim it so the word starts right away, export or share it as `.m4a`, name the files `countdown-3.m4a`, `countdown-2.m4a`, `countdown-1.m4a` and `countdown-go.m4a`, put them in `public/audio/`, then run `npm run build` and deploy.
+- **Optional events added to `GameEvents`** (for the race and world agents to emit): `spin:tick`, `spin:land`, `race:lead`, `animal:bump`. Every handler is wrapped in try/catch and tolerates events that never fire.
+- UI clicks use one capture-phase `pointerdown` listener on `button, [data-tap], [data-action]` (pedals excluded), so the UI module needs no changes.
+- `screenshots/audio/*.wav` are gitignored (about 4 MB, regenerate with `npm run audio-render`). The waveform PNGs are committed.

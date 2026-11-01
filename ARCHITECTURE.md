@@ -153,7 +153,34 @@ Flips already auto-reset (`vehicle:flipped` → `requestReset(racer, 0.5)`). The
 
 ## audio/
 
-`AudioSystem.unlock()` **must** be called synchronously in the Start tap (it already is). `attachVehicle(v)` reads `rpm`, `input.throttle`, `surface` and `wheels[].slip`. Subscribe to bus events for one-shots. `setCountdownVoice(urls | null)` is the swappable slot for Brooks's voice. Music and SFX volumes come from `settings`.
+All procedural (Web Audio): nothing is downloaded except optional countdown voice clips.
+
+| File | What |
+| --- | --- |
+| `index.ts` | `AudioSystem` (graph, vehicles, one-shots, music switching, event wiring) |
+| `engine.ts` | `ENGINE_PROFILES` per `VehicleSpec.engineSound`, `renderEngineLoop()` (pure JS), `EngineVoice` (loop → low-pass → gain → pan) |
+| `sfx.ts` | `SFX` one-shot generators, `LOOPS` (surface beds + tyre squeal), `animalVoice(kind)`, `obstacleSound(kind)` |
+| `music.ts` | `Sequencer` + `MENU_SONG` (104 bpm) / `RACE_SONG` (146 bpm) |
+| `voice.ts` | countdown voice slot (`public/audio/countdown-{3,2,1,go}.m4a`) |
+| `controls.ts` | `mountVolumeControls(settingsGrid)`: Music / Sound effects Off-Low-Med-High rows |
+
+```ts
+audio.unlock()                      // synchronously in the Start tap (already wired)
+audio.setSuspended(hidden)          // visibilitychange (already wired); pause mute comes from 'app:paused'
+audio.attachVehicle(v) / detachVehicle(v)   // race agent: attach the CPU car too, and swap on each new spin
+audio.playMusic('menu' | 'race' | null)     // normally automatic from 'phase:changed'
+audio.play('click' | 'chime' | ...)         // any SfxName one-shot
+audio.musicVolume / audio.sfxVolume         // 0..1 get/set, persisted via settings
+audio.setCountdownVoice(urls | null)
+```
+
+Graph: engines, tyres and one-shots go to the **game** bus and the sequencer goes to the **music** bus. Both feed **master**, which mutes on pause or hide, then a limiter, then the output. UI clicks use a **ui** bus that bypasses the pause mute. Engines and tyres only sound in `countdown`, `racing`, `bonus`, `freeDrive` and `results` (at half volume in `results`). The player's car is the listener: the CPU car and world sounds are attenuated (`1/(1+d/12)`), panned and low-passed by distance.
+
+**Events consumed:** `phase:changed` (music: title/calibrate/spin → menu, countdown → silence, racing/bonus/freeDrive → race, results → menu after 2.8 s), `app:paused`, `settings:changed`, `race:countdown` (voice clip or beep), `race:go` (horn, plus the voice clip if present), `race:checkpoint` (player chime), `race:finish` (cheer + win jingle, or "good try" jingle), `race:summit` (fanfare), `race:timeout` (buzzer), `vehicle:landed` (thump scaled by impact), `vehicle:collision` (crash / car bump / boing), `vehicle:surface` (splash / squelch / crunch on entering), `vehicle:flipped`, `vehicle:reset`, `obstacle:hit` (hay / cone / crash by `kind`), `animal:crossing`, and optional events (below). Per-frame state comes from `VehicleState`: `rpm`, `input.throttle`, `speed`, `surface`, `wheels[].slip/contact/surface`, `wheelsOnGround`, `airTime`, `position`, `forward`.
+
+**Optional events added for audio** (emit them when ready; nothing breaks if they never fire): `spin:tick {racer}` (one per reel item, throttled to 35 ms), `spin:land {racer, kind}`, `race:lead {leader}` (lead changes only), `animal:bump {kind, racer, x, z}`. Animal kinds are matched by substring (duck, mouse, deer, bear, croc), and anything else gets a boing. Obstacle kinds: hay/bale, cone, fence/crate/barrel → bump, anything else → crash.
+
+Tests: `npm run audio-test` (in `npm test`) renders every generator in Node and checks for NaN, clipping, silence, loop seams and render time. `npm run audio-render` renders through a real `OfflineAudioContext` in headless Chrome and writes `screenshots/audio/*.wav` + waveform PNGs, checking levels and dropouts.
 
 ## fx/
 
@@ -162,7 +189,7 @@ Flips already auto-reset (`vehicle:flipped` → `requestReset(racer, 0.5)`). The
 
 ## Debug hooks
 
-`window.__dirt` exposes `{loop, player, input, race, quality, renderer, ui, world}` for console poking and the smoke test. The pause screen shows quality, frame time, tilt status, draw calls and version.
+`window.__dirt` exposes `{loop, player, input, race, quality, renderer, ui, world, audio, events}` for console poking and the smoke test. The pause screen shows quality, frame time, tilt status, draw calls and version.
 
 ## Scripts
 
@@ -171,5 +198,6 @@ Flips already auto-reset (`vehicle:flipped` → `requestReset(racer, 0.5)`). The
 | `npm run dev` | Vite dev server on LAN (`--host`). iOS tilt needs **HTTPS**, so test tilt on the deployed build or behind an HTTPS tunnel. |
 | `npm run build` | icons → typecheck → `dist/` (relative base, service worker, manifest) |
 | `npm run typecheck` | strict TS for app and node scripts |
-| `npm test` | tilt maths and headless physics tests (no browser) |
+| `npm test` | tilt maths, headless physics and audio generator tests (no browser) |
+| `npm run audio-render` | renders sounds via OfflineAudioContext in headless Chrome → `screenshots/audio/` |
 | `npm run smoke` | serves `dist/` under `/dirt-race/`, drives in headless Chrome, checks SW/offline/rotate overlay, writes `screenshots/m1.png` (`QUALITY=medium npm run smoke` for shadows) |
