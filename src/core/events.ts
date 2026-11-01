@@ -14,6 +14,14 @@ export interface GameEvents {
   'race:summit': { racer: RacerId };
   'race:timeout': Record<string, never>;
   'race:results': RaceResults;
+  /** The leading car changed during the race (not emitted at GO). */
+  'race:lead': { leader: RacerId };
+  /** A racer crossed the finish line and its bonus-hill window started. */
+  'race:bonus': { racer: RacerId; seconds: number };
+  /** A racer's race is over (summit reached, bonus window ran out, or time ran out). */
+  'race:done': { racer: RacerId };
+  /** A reset was requested; the car moves after `delayS`. */
+  'race:resetting': { racer: RacerId; delayS: number };
 
   // ---- vehicles (emitted by src/vehicles) ----
   'vehicle:reset': { racer: RacerId };
@@ -50,6 +58,11 @@ export interface RaceResults {
   winner: RacerId | null;
   racers: RacerResult[];
   session: Record<RacerId, number>;
+  /** Optional detail: how the winner was decided ('finish' = first across the line, 'distance' = timer ran out, 'tie'). */
+  reason?: 'finish' | 'distance' | 'tie';
+  /** Optional: distance of the finish line / summit along the track (m), for result bars. */
+  finishM?: number;
+  summitM?: number;
 }
 
 type Handler<T> = (payload: T) => void;

@@ -1,9 +1,13 @@
 import { events, type TiltStatus } from '../core/events';
 import { settings, updateSettings } from '../core/settings';
-import type { QualityLevel, Sensitivity } from '../core/types';
+import type { Difficulty, QualityLevel, Sensitivity, SpeedUnit } from '../core/types';
+import { ResultsScreen, SpinCard } from './raceHud';
 import { onTap, Screen } from './screens';
 
 export { Screen, h, onTap } from './screens';
+export { RaceHud, ResultsScreen, SpinCard, RACER_NAME, formatClock, formatDistance, type HudTrack } from './raceHud';
+
+export type ScreenName = 'title' | 'calibrate' | 'pause' | 'spin' | 'results';
 
 /** Callbacks main.ts provides. UI never touches physics/vehicles directly. */
 export interface UIHandlers {
@@ -15,6 +19,10 @@ export interface UIHandlers {
   onMenu(): void;
   onRecalibrate(): void;
   onQuality(level: QualityLevel): void;
+  /** Results screen: start a new race (new spin). Optional so older wiring still compiles. */
+  onRaceAgain?(): void;
+  /** Results screen: back to the title. Defaults to onMenu. */
+  onResultsMenu?(): void;
   /** Debug readout for the pause screen. */
   debugInfo(): string;
 }
@@ -36,6 +44,9 @@ export class UI {
   readonly title: Screen;
   readonly calibrate: Screen;
   readonly pause: Screen;
+  /** Placeholder vehicle reveal (until the vehicles spin screen is merged). */
+  readonly spin: SpinCard;
+  readonly results: ResultsScreen;
   private toastEl: HTMLDivElement;
   private toastTimer = 0;
 
@@ -87,6 +98,14 @@ export class UI {
            <div class="seg" data-seg="steer">
              <button data-v="tilt">Tilt</button><button data-v="buttons">Buttons</button>
            </div>
+           <span>Computer</span>
+           <div class="seg" data-seg="difficulty">
+             <button data-v="easy">Easy</button><button data-v="normal">Normal</button><button data-v="hard">Hard</button>
+           </div>
+           <span>Speed in</span>
+           <div class="seg" data-seg="speedUnit">
+             <button data-v="mph">mph</button><button data-v="kmh">km/h</button>
+           </div>
          </div>
          <div class="row">
            <button class="mid-btn" data-tap="recal">Recalibrate tilt</button>
@@ -96,6 +115,12 @@ export class UI {
        </div>`,
       'pause',
     );
+
+    this.spin = new SpinCard(root);
+    this.results = new ResultsScreen(root, {
+      onRaceAgain: () => this.handlers.onRaceAgain?.(),
+      onMenu: () => (this.handlers.onResultsMenu ?? this.handlers.onMenu)(),
+    });
 
     this.toastEl = document.createElement('div');
     this.toastEl.className = 'toast';
@@ -134,6 +159,11 @@ export class UI {
             updateSettings({ autoQuality: false });
             this.handlers.onQuality(v as QualityLevel);
           } else if (seg.dataset.seg === 'steer') updateSettings({ steerButtons: v === 'buttons' });
+          else if (seg.dataset.seg === 'difficulty') {
+            const changed = settings.difficulty !== v;
+            updateSettings({ difficulty: v as Difficulty });
+            if (changed) this.toast('Computer difficulty changes from the next race');
+          } else if (seg.dataset.seg === 'speedUnit') updateSettings({ speedUnit: v as SpeedUnit });
           this.refreshSegments();
         });
       }
@@ -146,6 +176,8 @@ export class UI {
       sensitivity: settings.sensitivity,
       quality: settings.quality,
       steer: settings.steerButtons ? 'buttons' : 'tilt',
+      difficulty: settings.difficulty,
+      speedUnit: settings.speedUnit,
     };
     for (const seg of this.pause.el.querySelectorAll<HTMLElement>('[data-seg]')) {
       for (const b of seg.querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', b.dataset.v === current[seg.dataset.seg!]);
@@ -172,8 +204,8 @@ export class UI {
     if (el && el.textContent !== text) el.textContent = text;
   }
 
-  show(name: 'title' | 'calibrate' | 'pause' | null): void {
-    for (const s of [this.title, this.calibrate, this.pause]) {
+  show(name: ScreenName | null): void {
+    for (const s of [this.title, this.calibrate, this.pause, this.spin.screen, this.results.screen]) {
       if (s.name === name) s.show();
       else s.hide();
     }

@@ -100,11 +100,14 @@ export class TouchControls {
     this.root.style.display = v ? '' : 'none';
   }
 
-  /** Speedometer between the pedals (SPEC HUD). */
-  setSpeed(kmh: number): void {
+  /** Speedometer between the pedals (SPEC HUD). `unit` picks the display unit (input is always km/h). */
+  setSpeed(kmh: number, unit: 'kmh' | 'mph' = 'kmh'): void {
     const b = this.speedEl.firstElementChild as HTMLElement;
-    const v = String(Math.round(Math.abs(kmh)));
+    const v = String(Math.round(Math.abs(unit === 'mph' ? kmh * 0.621371 : kmh)));
     if (b.textContent !== v) b.textContent = v;
+    const label = this.speedEl.lastElementChild as HTMLElement;
+    const l = unit === 'mph' ? 'mph' : 'km/h';
+    if (label.textContent !== l) label.textContent = l;
   }
 }
 

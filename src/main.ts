@@ -8,12 +8,14 @@ import { Renderer } from './core/renderer';
 import { setWakeLock } from './core/wakeLock';
 import type { GameContext } from './core/context';
 import { preventBrowserGestures, PlayerInput } from './input';
-import { VEHICLES, createVehicle } from './vehicles';
+import { createVehicle, type Vehicle } from './vehicles';
 import { createWorld } from './world';
-import { RaceController } from './race';
+import { RaceController, RaceFlow } from './race';
+import { AIDriver, createPhysicsSensor } from './ai';
 import { ChaseCamera, Effects } from './fx';
 import { AudioSystem } from './audio';
-import { UI } from './ui';
+import { RaceHud, UI } from './ui';
+import { settings } from './core/settings';
 import { applyPendingUpdate, registerPWA } from './pwa';
 
 /**
@@ -42,43 +44,111 @@ async function boot(): Promise<void> {
   const world = loop.add(createWorld(ctx, 'test'));
   const race = loop.add(new RaceController(world));
 
-  const player = loop.add(
-    createVehicle({
-      physics,
-      parent: renderer.scene,
-      surfaces: world,
-      spec: VEHICLES.pickup,
-      paint: VEHICLES.pickup.paints[0],
-      racer: 'player',
-      spawn: world.spawns.player,
-    }),
-  );
-  player.input = input.state;
-  race.setVehicle('player', player);
+  // Per-race vehicles + computer driver live in RaceFlow (rebuilt on every spin).
+  // Order: race → computer driver (writes its input) → vehicles (read inputs). `flow` is assigned below,
+  // before the loop starts.
+  let flow!: RaceFlow;
+  loop.add({ fixedUpdate: (dt: number) => flow.aiSystem.fixedUpdate!(dt) });
+  loop.add({
+    fixedUpdate: (dt: number) => flow.vehicleSystem.fixedUpdate!(dt),
+    postPhysics: (dt: number) => flow.vehicleSystem.postPhysics!(dt),
+    update: (dt: number, a: number) => flow.vehicleSystem.update!(dt, a),
+  });
 
   const camera = loop.add(new ChaseCamera(renderer.camera));
-  camera.target = player;
   const fx = loop.add(new Effects(ctx));
-  fx.track(player);
   const audio = loop.add(new AudioSystem());
   audio.bindEvents();
-  audio.attachVehicle(player);
+  const hud = loop.add(new RaceHud(overlay, race));
+  hud.setTrack(world.track);
+
+  flow = new RaceFlow({
+    race,
+    world,
+    player: input,
+    createVehicle: (racer, pick, spawn) =>
+      createVehicle({
+        physics,
+        parent: renderer.scene,
+        surfaces: world,
+        spec: pick.spec,
+        paint: pick.paint,
+        racer,
+        spawn,
+      }),
+    createComputer: (cpu, gap) => {
+      const ai = new AIDriver(cpu, world, settings.difficulty);
+      ai.sensor = createPhysicsSensor(physics, 'cpu');
+      ai.rival = { gapM: gap };
+      return ai;
+    },
+    showSpin: (picks) =>
+      new Promise<void>((resolve) => {
+        ui.show('spin');
+        ui.spin.show(
+          {
+            player: {
+              name: picks.player.spec.name,
+              paint: picks.player.paint,
+              stats: { ...picks.player.spec.stats },
+            },
+            cpu: {
+              name: picks.cpu.spec.name,
+              paint: picks.cpu.paint,
+              stats: { ...picks.cpu.spec.stats },
+            },
+          },
+          () => {
+            ui.show(null);
+            setDriving(true);
+            resolve();
+          },
+        );
+      }),
+    onVehicles: (now, old) => {
+      for (const v of Object.values(old) as Vehicle[]) {
+        audio.detachVehicle(v);
+        fx.untrack(v);
+      }
+      for (const v of [now.player, now.cpu]) {
+        audio.attachVehicle(v);
+        fx.track(v);
+      }
+      camera.target = now.player;
+      camera.snap();
+      hud.setCarColors({ player: now.player.paint, cpu: now.cpu.paint });
+    },
+    onResults: (res) => {
+      setDriving(false);
+      hud.setVisible(false);
+      ui.results.show(res, {
+        player: flow.vehicles.player?.paint,
+        cpu: flow.vehicles.cpu?.paint,
+      });
+      ui.show('results');
+    },
+  });
+  flow.prepare();
+  const playerCar = (): Vehicle | undefined => flow.vehicles.player;
 
   // Shadow camera + HUD follow the player.
   loop.add({
     update: () => {
-      renderer.setShadowFocus(player.position);
-      input.touch.setSpeed(player.speed * 3.6);
+      const p = playerCar();
+      if (p) {
+        renderer.setShadowFocus(p.position);
+        input.touch.setSpeed(p.speed * 3.6, settings.speedUnit);
+      }
       if (ui.calibrate.el.hidden === false) ui.setTiltReadout(input.tilt.status === 'granted' ? `tilt ${input.tilt.rawAngle.toFixed(0)}°` : '');
     },
   });
 
   // ---- flow: title → calibrate → drive
   let paused = false;
+  // HUD/controls visible + wake lock during countdown/race. Who may actually drive is the race's call.
   const setDriving = (on: boolean): void => {
-    input.enabled = on;
-    player.setFrozen(!on);
     input.touch.setVisible(on);
+    hud.setVisible(on);
     setWakeLock(on);
     quality.setMonitoring(on);
   };
@@ -97,15 +167,18 @@ async function boot(): Promise<void> {
     onReady: () => {
       input.tilt.calibrate();
       ui.show(null);
-      race.startFreeDrive();
-      setDriving(true);
+      void flow.newRace();
+    },
+    onRaceAgain: () => {
+      ui.show(null);
+      applyPendingUpdate();
+      void flow.newRace();
     },
     onResume: () => togglePause(false),
     onMenu: () => {
       togglePause(false);
       setDriving(false);
-      player.reset(world.spawns.player);
-      race.setPhase('title');
+      flow.quit();
       ui.show('title');
       onTitle = true;
       applyPendingUpdate();
@@ -125,17 +198,17 @@ async function boot(): Promise<void> {
   });
 
   const togglePause = (force?: boolean): void => {
-    if (race.phase === 'title' || race.phase === 'calibrate') return;
+    if (race.phase === 'title' || race.phase === 'calibrate' || race.phase === 'spin' || race.phase === 'results') return;
     paused = force ?? !paused;
     loop.paused = paused;
-    input.enabled = !paused;
     quality.setMonitoring(!paused);
     ui.show(paused ? 'pause' : null);
+    hud.setVisible(!paused);
     events.emit('app:paused', { paused });
   };
 
   input.onAction('reset', () => {
-    if (input.enabled) race.requestReset('player');
+    if (!paused) race.requestReset('player');
   });
   input.onAction('camera', () => camera.toggleMode());
   input.onAction('pause', () => togglePause());
@@ -143,12 +216,12 @@ async function boot(): Promise<void> {
   document.addEventListener('visibilitychange', () => {
     const hidden = document.visibilityState === 'hidden';
     audio.setSuspended(hidden);
-    if (hidden && input.enabled) togglePause(true);
+    if (hidden && race.canDrive('player')) togglePause(true);
   });
   // Pause when rotated to portrait mid-drive (the CSS overlay covers the screen).
   const portrait = window.matchMedia('(orientation: portrait)');
   portrait.addEventListener('change', () => {
-    if (portrait.matches && input.enabled) togglePause(true);
+    if (portrait.matches && (race.canDrive('player') || race.phase === 'countdown')) togglePause(true);
   });
 
   setDriving(false);
@@ -157,7 +230,26 @@ async function boot(): Promise<void> {
   document.body.classList.add('ready');
 
   // Dev/test hook (used by scripts/smoke.mjs). Harmless in production.
-  (window as unknown as { __dirt: unknown }).__dirt = { loop, player, input, race, quality, renderer, ui, world };
+  (window as unknown as { __dirt: unknown }).__dirt = {
+    loop,
+    get player() {
+      return flow.vehicles.player;
+    },
+    get cpu() {
+      return flow.vehicles.cpu;
+    },
+    get ai() {
+      return flow.computer;
+    },
+    flow,
+    hud,
+    input,
+    race,
+    quality,
+    renderer,
+    ui,
+    world,
+  };
 }
 
 boot().catch((err) => {

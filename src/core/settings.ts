@@ -1,6 +1,6 @@
 import { events } from './events';
 import { loadJSON, saveJSON } from './storage';
-import type { CameraMode, Difficulty, QualityLevel, Sensitivity } from './types';
+import type { CameraMode, Difficulty, QualityLevel, Sensitivity, SpeedUnit } from './types';
 
 export interface Settings {
   quality: QualityLevel;
@@ -15,6 +15,8 @@ export interface Settings {
   steerButtons: boolean;
   /** Flip tilt direction (safety valve if a device reports the opposite sign). */
   tiltInvert: boolean;
+  /** Speedometer/distance units. Default mph (family is US-based). */
+  speedUnit: SpeedUnit;
   /** Has the "turn on Rotation Lock" tip been shown. */
   seenRotationTip: boolean;
 }
@@ -32,6 +34,7 @@ const DEFAULTS: Settings = {
   steerButtons: false,
   tiltInvert: false,
   seenRotationTip: false,
+  speedUnit: 'mph',
 };
 
 /** Live settings object. Mutate via `updateSettings` so changes persist and broadcast. */

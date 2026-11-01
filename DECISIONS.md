@@ -45,3 +45,31 @@ Decisions made without the family (they're on a flight). Each one is easy to rev
 
 ### Not done in M1 (owned by other agents per ARCHITECTURE.md)
 - Real track, terrain, obstacles, animals, hill (world). Race rules, spin, countdown, results (race/ui). AI. Audio. Particles and skid marks (fx). Per-kind vehicle models.
+
+## Race, AI and race HUD (race agent), 2026-11-01
+
+### Rules and flow
+- **The race owns `vehicle.input`.** It switches between the driver's input and a "hold" input (brake to a stop, then release). I didn't use `vehicle.setFrozen()`, because its brake=1 makes a stopped car reverse (it rolled 14 m backwards in 4 s on the grid). Pressing gas during 3-2-1 does nothing; the test checks the cars move 0.00 m.
+- **Every finisher gets its own 45 s bonus-hill window**, so the loser can still earn the summit point (SPEC). The finish point goes to the first car across. The summit counts within 7 m of the flag or at the end of the centre-line.
+- **Brooks isn't kept waiting.** Once his race is over (summit, bonus window used, or timer), the computer gets at most 12 s more (`cpuGraceS`). After that the results show 1.5 s after the last car is done.
+- **Timer rule:** cars still racing at 4:00 stop. If nobody finished, the higher *farthest-reached* distance wins 1 point. A gap under 0.5 m is a tie and nobody scores. If one car finished, it already won; the other car's distance is shown but doesn't matter.
+- **Results distances** are measured from the grid. A finisher shows at least the finish distance.
+- **Reset on the bonus hill** returns the car to the finish line (bottom of the hill), not to a checkpoint back down the track.
+- **Race Again** spins new random cars for both (SPEC). The placeholder spin card has a "LET'S RACE!" button so Brooks controls when the countdown starts. The real reel replaces it.
+- **Lead-change events** use a 2 m hysteresis so two cars side by side don't spam `race:lead`. No lead event fires at GO.
+- **Pause** is allowed during countdown/racing/bonus only, not on spin or results.
+
+### Computer driver
+- **No speed cheating.** It uses the same vehicle and physics, and the speed caps are fractions of *its own* car's top speed (80 / 92 / 100 %). Easy also eases off up to 40 % when more than 35 m ahead of Brooks. No rubber-band *boost* when behind.
+- The **speed profile is precomputed per car** from curvature, surface grip (with the car's off-road stat), steep descents and crests, plus a backward braking pass. Per step it only does a pure-pursuit steer, a P-controller on speed, and 5 rays at 12 Hz. That costs about 10 µs per step in Node.
+- **On slopes steeper than ~11° it holds full throttle**, so it actually tries the bonus hill. This is unverified on a real 35° hill: TestGround is flat. Revisit once the real hill is in.
+- **Mistakes:** wobble, throttle lift, running wide, braking late. Easy every 5–10 s, Normal every 14–26 s, Hard never.
+- **Shortcut contract:** Hard takes any `world.shortcuts[]` it reaches (optional and duck-typed, so the World interface is unchanged). The world engineer should publish the log bridge as `{id:'log-bridge', startS, endS, points}`.
+- **Stuck handling:** reverse out (with mirrored steer). After 9 s with no progress or 3 failed recoveries it asks for a Reset and waits out the same 2 s as Brooks.
+
+### HUD / settings
+- **mph by default**, with km/h in Pause → "Speed in". The results show distances in feet with mph and metres with km/h. Internally everything stays SI.
+- **Difficulty** is in Pause → "Computer". Changing it mid-race applies from the next race (toast says so), so the current opponent doesn't suddenly change.
+- The big 3-2-1-GO is driven by race sim time, not CSS timers, so it can't drift on a slow iPad frame.
+- Progress-strip markers use the cars' paint colours, with YOU/CPU labels.
+- Names on screen are "Brooks" and "Computer" (SPEC).
