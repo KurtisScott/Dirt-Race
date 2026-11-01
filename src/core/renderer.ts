@@ -10,7 +10,7 @@ export const SKY = {
   ground: 0xa9b993,
   sunColor: 0xfff0d2,
   hemiSky: 0xd3e8ff,
-  hemiGround: 0x6b6a3e,
+  hemiGround: 0x7d7650,
 };
 
 /** Thrown when the device can't create a WebGL2 context (three.js r150+ needs WebGL2). */
@@ -18,19 +18,6 @@ export class NoWebGLError extends Error {
   constructor(detail: string) {
     super(detail);
     this.name = 'NoWebGLError';
-  }
-}
-
-/** Can this browser create a WebGL2 context at all? (iPadOS 15+ can; older iPadOS can't.) */
-export function hasWebGL2(): boolean {
-  try {
-    const c = document.createElement('canvas');
-    const gl = c.getContext('webgl2');
-    const ok = !!gl;
-    (gl?.getExtension('WEBGL_lose_context') as { loseContext(): void } | null)?.loseContext();
-    return ok;
-  } catch {
-    return false;
   }
 }
 
@@ -76,7 +63,7 @@ export class Renderer {
     this.scene.background = fogColor;
     this.scene.fog = new THREE.Fog(fogColor, p.fogNear, p.viewDistance);
 
-    this.hemi = new THREE.HemisphereLight(SKY.hemiSky, SKY.hemiGround, 1.25);
+    this.hemi = new THREE.HemisphereLight(SKY.hemiSky, SKY.hemiGround, 1.45);
     this.scene.add(this.hemi);
 
     this.sun = new THREE.DirectionalLight(SKY.sunColor, 2.7);

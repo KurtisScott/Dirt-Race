@@ -12,8 +12,9 @@ export type VehiclePicks = Record<RacerId, VehiclePick>;
 export type SpinFn = (rand?: () => number) => VehiclePicks;
 
 /**
- * Stub spin until the vehicles spin screen is merged: an independent random pick for each racer
- * (SPEC: the computer gets the same random spin as Brooks, no special treatment).
+ * Default picks when RaceFlow is given no `spin` (headless tests): an independent random pick for each
+ * racer (SPEC: the computer gets the same random spin as Brooks, no special treatment). The game itself
+ * passes `pickVehicles` from ui/spin.
  */
 export const randomSpin: SpinFn = (rand = Math.random) => ({
   player: randomVehicle(rand),

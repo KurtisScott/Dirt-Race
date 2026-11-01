@@ -347,6 +347,41 @@ const worldInfo = await page.evaluate(() => {
 });
 check(worldInfo.zones.startsWith('town,farm,mud,rocky,desert,river') && worldInfo.cps >= 6 && worldInfo.shortcuts === 1, `race course loaded: ${worldInfo.len} m, zones ${worldInfo.zones}, ${worldInfo.cps} checkpoints`);
 
+// iOS gesture rule: Start, tapped while the course is still building, must call
+// DeviceOrientationEvent.requestPermission() synchronously inside the click (fake iOS API, slowed CPU).
+{
+  const g = await browser.newPage({ viewport: { width: 1112, height: 834 }, deviceScaleFactor: 1 });
+  await g.addInitScript(() => {
+    try {
+      localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: 'low', autoQuality: false, seenRotationTip: true }));
+    } catch {}
+    window.__perm = { calls: 0, inGesture: false };
+    let inClick = false;
+    document.addEventListener('click', () => (inClick = true), true);
+    document.addEventListener('click', () => setTimeout(() => (inClick = false)), false);
+    window.DeviceOrientationEvent.requestPermission = () => {
+      window.__perm.calls++;
+      window.__perm.whileLoading = !document.body.classList.contains('ready');
+      window.__perm.inGesture = inClick && navigator.userActivation?.isActive !== false;
+      return Promise.resolve('granted');
+    };
+  });
+  const cdp = await g.context().newCDPSession(g);
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+  await g.goto(`http://localhost:${PORT}/dirt-race/`, { waitUntil: 'commit' });
+  await g.waitForSelector('[data-screen="title"]:not([hidden])', { timeout: 60000 });
+  await g.click('[data-tap="start"]');
+  const perm = await g.evaluate(() => window.__perm);
+  check(perm.calls === 1 && perm.inGesture, `Start asks for tilt permission synchronously in the tap (calls ${perm.calls}, in gesture ${perm.inGesture})`);
+  // The course build yields only between its two halves, so whether the (headless) click lands before it
+  // finishes depends on timing: informational.
+  console.log(`  info Start was handled ${perm.whileLoading ? 'while the course was still building' : 'after the course finished building'}`);
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
+  await g.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 90000 });
+  check(await g.isEnabled('[data-tap="ready"]'), 'Ready enables once the course is built');
+  await g.close();
+}
+
 // Forced fallback terrain (?terrain=simple) boots and renders without errors, never a black/pink world.
 {
   const fb = await browser.newPage({ viewport: { width: 1112, height: 834 }, deviceScaleFactor: 1 });

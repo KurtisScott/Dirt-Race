@@ -84,9 +84,10 @@ export function sharedMaterials(): Record<Exclude<MatKey, 'paint' | 'tail'>, THR
 export function paintMaterial(): THREE.MeshStandardMaterial {
   const env = typeof document !== 'undefined' ? vehicleEnvMap() : null;
   if (settings.quality === 'high') {
-    return new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.42, metalness: 0.3, clearcoat: 1, clearcoatRoughness: 0.07, envMap: env, envMapIntensity: 1 });
+    return new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.42, metalness: 0.15, clearcoat: 1, clearcoatRoughness: 0.07, envMap: env, envMapIntensity: 1 });
   }
-  return new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, metalness: 0.18, envMap: env, envMapIntensity: 0.95 });
+  // Low metalness keeps the paint bright and saturated against the terrain (metal darkens the diffuse colour).
+  return new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.08, envMap: env, envMapIntensity: 0.9 });
 }
 
 export const C = {

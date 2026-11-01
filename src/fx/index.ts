@@ -573,7 +573,35 @@ export class Effects implements System {
     flakes(racer === 'player' ? 1 : 0.4);
     if (racer === 'player') {
       this.later(0.6, () => flakes(0.6));
-      if (v) this.puff(v.position.x, this.groundY(v.position.x, v.position.z) + 0.3, v.position.z, 0xffe8a0, 14, 1.4);
+      if (v) {
+        // The chase camera looks at the car, not the flag top: a golden fountain right around the car.
+        const fountain = (scale: number): void => {
+          const n = Math.round(50 * scale * (0.5 + this.detail * 0.5));
+          for (let k = 0; k < n; k++) {
+            _c.setHex(r() < 0.6 ? 0xffd34d : r() < 0.5 ? 0xffb81c : 0xfff2b0);
+            const a = r() * Math.PI * 2;
+            const sp = 1.5 + r() * 3.5;
+            this.debris.spawn({
+              x: v.position.x + Math.cos(a) * 1.2,
+              y: v.position.y + 1,
+              z: v.position.z + Math.sin(a) * 1.2,
+              vx: Math.cos(a) * sp,
+              vy: 6 + r() * 5,
+              vz: Math.sin(a) * sp,
+              life: 3 + r() * 1.5,
+              w: 0.2,
+              l: 0.2,
+              color: _c,
+              spin: 5 + r() * 6,
+              drag: 1.2,
+              gravity: 0.45,
+            });
+          }
+        };
+        fountain(1);
+        this.later(0.35, () => fountain(0.7));
+        this.puff(v.position.x, this.groundY(v.position.x, v.position.z) + 0.3, v.position.z, 0xffe8a0, 14, 1.4);
+      }
     }
   }
 

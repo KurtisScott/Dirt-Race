@@ -11,7 +11,7 @@ export interface VehicleSpec {
   paints: [number, number, number];
   /** Short line shown on the spin screen. */
   blurb: string;
-  /** Body dimensions (metres) used by params + placeholder model. */
+  /** Body dimensions (metres) used by params and the procedural models. */
   size: { length: number; width: number; height: number };
   wheelRadius: number;
   drive: 'front' | 'rear' | 'all';

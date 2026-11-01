@@ -166,3 +166,45 @@ Decisions made without the family (they're on a flight). Each one is easy to rev
 - `WORLD=race npx tsx scripts/race-test.ts` runs the race agent's full race suite on the real course (solo timers scaled ×3). Plain `npm test` still runs it on TestGround for speed.
 - `node scripts/world-shots.mjs` (after a build) writes `screenshots/world-*.png` and prints draw calls/triangles per zone.
 - `?level=test` in the URL loads the old test ground.
+
+## Milestone 4 (polish), 2026-11-01
+
+### Effects (`src/fx`)
+- **Three pooled systems, at most 3 draw calls in total:** one `Points` sprite pool (700) for all soft particles, one `InstancedMesh` (260) for tumbling flat pieces (hay, confetti, golden flakes), and one ring-buffer mesh (600 quads) for skid marks. Each is hidden when empty. Nothing is allocated per frame. The live cap is the pool × `quality.detail` (Low 0.4).
+- Particle sprites are sized in metres, with on-screen size capped (60–200 px by quality) and faded near the camera. Large overlapping translucent sprites are the fill-rate killer on A10X, and this keeps them under control.
+- Dust comes from the rear wheels (fronts only when sliding), with the rate scaled by speed and slip. Sand is dustier and gravel less so. There's no dust on asphalt (skid marks and tyre smoke instead) or in mud (heavy spray instead).
+- **Confetti fires from cannons on both finish-gantry posts.** The finish line is where the camera is when someone crosses it. The **summit** gets golden flakes from the flag top *and* a fountain around the car, because the chase camera looks at the car, not the 14 m pole.
+- **Blob shadows on Low:** a soft dark quad under each car, tilted to the terrain, appears only when real shadows are off. Without it, cars on Low looked like they were floating.
+
+### Look
+- **Neutral tone mapping** (Khronos PBR Neutral) instead of ACES. ACES greyed out and darkened the car paints, and bright saturated colours read better for a kid. Car paint metalness dropped from 0.18 to 0.08 for the same reason.
+- The sky dome now has a sun disc plus a warm haze toward the sun. The fog colour is exactly the sky's horizon colour, so the distant terrain melts into the sky. The hemisphere fill is a touch brighter and warmer.
+- Fog starts later (Low 90 m, Medium 170 m, High 250 m). The old 70–120 m start washed out the mid-ground, especially the bonus hill.
+- **No `backdrop-filter`** on menus. A full-screen blur over a WebGL canvas that redraws every frame is expensive on old iPads, so menus use a translucent tint instead (the spin screen already did this).
+
+### Old-iPad safety
+- **Terrain shading modes:** `full` (Medium/High), `lite` (Low: drops the second "macro" texture fetch per pixel) and `simple` (no textures or sampler arrays; a per-vertex blend of each layer's average colour).
+  - The game switches to `simple` when the terrain program fails to compile or link. This is detected through three's shader diagnostics after the first frame (`renderer.programFailed`). It also switches when frames are still slower than 40 ms on Low (`quality:slow`), or with `?terrain=simple`.
+  - A shader failure is remembered in localStorage (`dirtrace.gpu.v1`), so the next launch starts safe.
+  - Switching only swaps materials (no geometry rebuild) and frees the texture array.
+- **WebGL1-only devices:** three.js r187 only supports WebGL2, so there's no WebGL1 render path to fall back to. iPadOS 15+ has WebGL2, including both target iPads. If the context can't be created (after retrying without MSAA and without `high-performance`), the game shows a friendly message asking to update iPadOS instead of a blank screen.
+- **Low preset:** pixel ratio 1, no shadows (blob shadows instead), view distance 240 m (was 260), and grass tufts, bushes and small decorative rocks hidden. Texture sizes are already ≤ 512 on Low/Medium (terrain layers 256², asphalt ≤ 512×1024 on High only).
+- **Quality auto-drop** verified to trigger and persist (smoke test). It persisted before too, through `quality.set → updateSettings`. A new **Auto** button on the graphics row turns monitoring back on after a manual choice. `applyQuality` no longer marks every material for recompile unless shadows actually flip, so a drop doesn't cause a long hitch.
+- **Leak check:** the smoke test runs 5 Race Agains. GPU textures (9), programs (19), physics bodies and scene children stay identical. Geometries wobble ±1 because vehicle kinds differ.
+
+### Loading
+- The UI and title screen are created *before* the Rapier WASM and the course. Start is usable while the course builds, and it still calls `requestPermission()` and `audio.unlock()` synchronously in the tap. The calibrate screen's Ready shows "LOADING…" until the course exists.
+- The course is built in two halves (`CourseData`, then meshes and colliders) with a paint in between, so the bar moves on the iPad. It can't be finer-grained without making the world code asynchronous. Each half is still one long task, about 1–3 s on an A12 (estimate).
+- The title backdrop is a slow camera orbit around the two parked cars on the grid.
+
+### Menus
+- The logo is inline SVG (gradient + stroke text, a waving checkered flag, a dust puff), animated in CSS. There's no web font: it uses `ui-rounded` (SF Pro Rounded on iPad).
+- The first-launch tip (Rotation Lock, plus Add to Home Screen only when not standalone) shows on touch devices until "Got it". `?tip=1` forces it.
+- "How to play" (4 cards) is available from the title and the pause screen.
+- **Tilt direction: Normal / Flipped** is on the settings screen (`settings.tiltInvert`).
+- The Start button's "ready" pulse is a glow ring on a pseudo-element, not a scale on the button itself, so the tap target doesn't move.
+- The results screen has CSS confetti and a bouncing trophy when Brooks wins, gold stars for a summit bonus, and a "So close! Race again?" line otherwise.
+
+### Cleanup
+- Removed the placeholder `SpinCard` and its CSS, `buildPlaceholderModel`, and stale TODO/M1 comments. `randomSpin` stays as RaceFlow's default for headless tests.
+- Added `.github/workflows/pages.yml`, which tests, builds and deploys to GitHub Pages.

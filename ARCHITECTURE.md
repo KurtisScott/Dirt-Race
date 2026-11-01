@@ -39,8 +39,8 @@ scripts/           icons, headless physics/tilt tests, browser smoke test
 | `loop.ts` | `GameLoop`: fixed 60 Hz physics with render interpolation. `add(system)`, `paused`, `simTime`, `stepOnce()` |
 | `physics.ts` | `initRapier()`, `PhysicsWorld {world, tag(), getTag(), onCollision(), onContactForce()}`, `PHYSICS_DT`, collision `Group` bits + `groups(member, filter)`, `ColliderTag` |
 | `interpolation.ts` | `InterpolatedPose`: `capture()` after each step, `apply(obj, alpha)` per frame, `snap()` after teleports |
-| `renderer.ts` | `Renderer {scene, camera, sun, sunDir, setShadowFocus(), applyQuality()}`: sky dome, fog, hemisphere + sun light |
-| `quality.ts` | `QualityManager {preset, set(level), setMonitoring(on)}`, `QUALITY_PRESETS` |
+| `renderer.ts` | `Renderer {scene, camera, sun, sunDir, setShadowFocus(), applyQuality(), programFailed(mat), programReady(mat), shaderErrors}`: sky dome with sun disc + warm haze, fog = sky horizon colour, Neutral tone mapping, safe WebGL2 context creation (`NoWebGLError`), `SKY` palette |
+| `quality.ts` | `QualityManager {preset, set(level, auto?), setMonitoring(on), sample(), autoDrops}`, `QUALITY_PRESETS`. Drops a level after 3 slow 1 s windows (>22 ms) and persists it; on Low, >40 ms emits `quality:slow` once |
 | `settings.ts` | live `settings` object + `updateSettings(patch)` (persists, emits `settings:changed`) |
 | `storage.ts` | `loadJSON`, `saveJSON` |
 | `math.ts` | `clamp`, `lerp`, `smoothing(dt, tau)`, `approach`, `wrapAngle`, seeded `rng(seed)` |
@@ -141,7 +141,7 @@ PolylineTrack.fromControlPoints(ctrl, halfWidth, finishS, summitS)   // reusable
 | --- | --- |
 | `layout.ts` | **Tune the course here.** Turtle segments (length + turn) → centre-line; zones; road widths; `FINISH_BEFORE_HILL_M` (the single finish-placement value); hill length/angles |
 | `course.ts` | `CourseData`: pure data, no DOM/GL. Elevation profile, 2 m terrain height grid, 1 m surface grid, river/hill/shortcut geometry, checkpoints, spawns, and every prop/obstacle/animal placement. `CourseTrack` is the `TrackPath` |
-| `terrain.ts` | Rapier heightfield (same grid and triangle split as the mesh, so `heightAt` is exact) + chunked render mesh with an 8-layer texture-array splat shader |
+| `terrain.ts` | Rapier heightfield (same grid and triangle split as the mesh, so `heightAt` is exact) + chunked render mesh. `TerrainShading`: `full` (8-layer texture-array splat + macro), `lite` (Low: no macro fetch), `simple` (no textures: per-vertex blend of each layer's average colour). `handles.setShading(mode)` swaps materials without rebuilding geometry |
 | `textures.ts` | Procedural textures from typed arrays (terrain layers, asphalt with lines, water normals, checker, pixel-font banners) |
 | `props.ts` | Low-poly vertex-coloured templates (trees, pines, bushes, rocks, tufts, houses, barn, fence, ramp, log bridge) + `ChunkMerger` (one mesh per 120–160 m chunk) |
 | `obstacles.ts` | Hay bales and cones (dynamic, sleeping, instanced), fixed boulders; emits `obstacle:hit` |
@@ -154,6 +154,8 @@ All `s` values on the course are **horizontal** metres along the centre-line. `t
 * `shortcuts: TrackShortcut[]`: `[{ id: 'log-bridge', startS, endS, points, halfWidth, maxSpeed }]` (AIWorldExtras, taken by the Hard computer).
 * `animals: AnimalInfo[]`: `{ kind, position, velocity, radius, active }`. The AI should steer around entries with `active === true`. Animals are also `Group.ANIMAL` colliders, so the existing ray sensor sees them.
 * `data: CourseData` (debug/tests), `animalsEnabled` (setter), `plannedAnimals`.
+
+**Terrain fallback** (`RaceCourse`): Low → `lite`, Medium/High → `full`. Falls to `simple` (and remembers it in localStorage `dirtrace.gpu.v1`) when the terrain program fails to compile/link (checked via `renderer.programFailed` after the first frame), on `quality:slow`, or with `?terrain=simple`. Decorative rocks, bushes and tufts are hidden on Low.
 
 Event kinds: obstacles `'hay bale' | 'cone' | 'boulder'`; animals `'deer' | 'bear' | 'mouse' | 'duck' | 'croc'`.
 
@@ -222,7 +224,7 @@ Rapier rays vs STATIC|DEBRIS|ANIMAL|VEHICLE), `rival: { gapM() }` (Easy eases of
 
 ## ui/
 
-`new UI(root, handlers: UIHandlers)` provides the title, calibrate ("hold it like a wheel"), and pause/settings screens plus `toast()`. Screens are plain HTML via the `Screen` helper. Buttons use `onTap` (a click on an element with `touch-action: manipulation`, which counts as a user activation on iOS). The UI reads `RaceView`, `VehicleState` and the event bus. It never touches physics. The HUD speedometer lives in `input/touch.ts` between the pedals (`touch.setSpeed(kmh, settings.speedUnit)`).
+`new UI(root, handlers: UIHandlers)` provides the title (SVG logo, loading bar via `ui.setLoading(f, label)`, Start, How to play, first-launch Rotation Lock / Add to Home Screen tip), calibrate ("hold it like a wheel"; Ready waits for `handlers.courseReady`), the How to play card (`help`), and pause/settings screens (sensitivity, tilt direction, steering, computer, graphics Low/Med/High/Auto, units, volumes) plus `toast()`. Screens are plain HTML via the `Screen` helper. Buttons use `onTap` (a click on an element with `touch-action: manipulation`, which counts as a user activation on iOS). The UI reads `RaceView`, `VehicleState` and the event bus. It never touches physics. The HUD speedometer lives in `input/touch.ts` between the pedals (`touch.setSpeed(kmh, settings.speedUnit)`).
 
 Race UI (`ui/raceHud.ts`):
 * `RaceHud` (a System): position badge, race clock (red under 30 s), progress strip (start, finish flag, hill, summit
@@ -231,7 +233,7 @@ Race UI (`ui/raceHud.ts`):
   win, summit, time's up).
 * `ResultsScreen` (`ui.results`): winner, how it was decided, a card per racer (vehicle, distance bar, finish time or
   distance reached, summit bonus, points), session score, plus RACE AGAIN / Menu (`handlers.onRaceAgain`, `onResultsMenu`).
-* `SpinCard` (`ui.spin`): placeholder vehicle reveal, **superseded** by the reel in `ui/spin/` (wired via `RaceFlow.showSpin` in main.ts). Safe to delete.
+  CSS confetti + bouncing trophy when Brooks wins (gold stars for a summit bonus).
 * Pause screen adds **Computer: Easy / Normal / Hard** (takes effect from the next race) and **Speed in: mph / km/h**
   (`settings.speedUnit`, default mph; results distances are shown in feet or metres to match).
 
@@ -242,7 +244,7 @@ runVehicleSpin(uiRoot, { rand?, force?: {player?, cpu?}, playerName?, cpuName?, 
   → Promise<{ player: {spec, paint}, cpu: {spec, paint} }>   // resolves when GO is tapped
 ```
 
-It adds a full-screen overlay (`[data-screen="spin"]`) with two slot-machine reels of rendered model cards. Brooks's reel lands first, then the Computer's. Stat bars (Top speed, Acceleration, Grip, Off-road, Hill climb) fill as each reel lands. GO (`[data-tap="spin-go"]`) appears after both reels stop, and the overlay removes itself on tap. Bus events: `spin:tick {racer}` (each card passing, for reel clatter), `spin:land {racer, kind}` (both consumed by audio), and `spin:done {player, cpu}`. **Wired into the race flow** in `main.ts`: `RaceFlowDeps.spin = pickVehicles` (random picks), and `showSpin = (picks) => showVehicleSpin(uiRoot, picks)` plays the reels landing on exactly those picks and resolves on GO. CSS classes are prefixed `vspin-` so they can't clash with the old placeholder's `.spin-*` styles. The placeholder `SpinCard` (`ui.spin`) is no longer shown but is still constructed, so `ui.show('spin')` keeps compiling. Dev page: `src/ui/spin/dev.html?seed=7&speed=1`. `node scripts/spin-shot.mjs` checks the spin screen and writes `screenshots/spin.png`.
+It adds a full-screen overlay (`[data-screen="spin"]`) with two slot-machine reels of rendered model cards. Brooks's reel lands first, then the Computer's. Stat bars (Top speed, Acceleration, Grip, Off-road, Hill climb) fill as each reel lands. GO (`[data-tap="spin-go"]`) appears after both reels stop, and the overlay removes itself on tap. Bus events: `spin:tick {racer}` (each card passing, for reel clatter), `spin:land {racer, kind}` (both consumed by audio), and `spin:done {player, cpu}`. **Wired into the race flow** in `main.ts`: `RaceFlowDeps.spin = pickVehicles` (random picks), and `showSpin = (picks) => showVehicleSpin(uiRoot, picks)` plays the reels landing on exactly those picks and resolves on GO. CSS classes are prefixed `vspin-`. Dev page: `src/ui/spin/dev.html?seed=7&speed=1`. `node scripts/spin-shot.mjs` checks the spin screen and writes `screenshots/spin.png`.
 
 
 ## audio/
@@ -278,12 +280,24 @@ Tests: `npm run audio-test` (in `npm test`) renders every generator in Node and 
 
 ## fx/
 
-* `ChaseCamera` (done): `target`, `toggleMode()` (close/far, persisted), `shake(amount)`, `snap()`, `override` (for results/finish cinematics). Shake fires automatically on hard landings.
-* `Effects` (stub): `track(vehicleState)`. Build particles and skid marks from `wheels[]` and scale by `quality.preset.detail`.
+* `ChaseCamera`: `target`, `toggleMode()` (close/far, persisted), `shake(amount)`, `snap()`, `override` (main uses it for the slow title-screen orbit around the parked cars). Shake fires automatically on hard landings.
+* `Effects` (`fx/index.ts`): `track(v)` / `untrack(v)`, `setWorld(world)`, `clear()`, `dispose()`. At most **3 draw calls**, each hidden when empty:
+  * `particles.ts` `ParticleSystem`: one `THREE.Points` pool (700, live cap = 700 × `detail`) with a metre-sized round sprite shader, fog-aware, on-screen size capped. Dust on dirt/gravel/sand (rear wheels, fronts when sliding), mud spray, water splashes, exhaust, tyre smoke, landing puffs, summit sparkles.
+  * `debris.ts` `DebrisSystem`: one `InstancedMesh` pool (260) of tumbling flat pieces that settle on `heightAt`: hay strands (`obstacle:hit`), finish confetti cannons on both gantry posts (`race:finish`), golden flakes from the flag top + a fountain around the car (`race:summit`).
+  * `skidMarks.ts` `SkidMarks`: one ring-buffer mesh (600 quads) on asphalt when `wheel.slip > 0.4`, fading in quarters.
+  * Blob shadows (one small quad per car) only when real shadows are off (Low).
+  * Events: `vehicle:landed`, `obstacle:hit`, `animal:bump`, `race:finish`, `race:summit`, `quality:changed`; cleared on `phase:changed` → spin/title.
 
 ## Debug hooks
 
-`window.__dirt` exposes `{loop, player, cpu, ai, flow, hud, input, race, quality, renderer, ui, world, audio, events}` (`player`/`cpu` are getters: cars are rebuilt every spin) for console poking and the smoke test. The pause screen shows quality, frame time, tilt status, draw calls and version.
+`window.__dirt` exposes `{loop, player, cpu, ai, flow, hud, input, race, quality, renderer, ui, world, camera, audio, events, fx, physics}` (`player`/`cpu` are getters: cars are rebuilt every spin) for console poking and the smoke test. The pause screen shows quality, frame time, tilt status, pixel ratio, draw calls, triangles, terrain shading, GPU texture/geometry counts and version.
+
+### Boot sequence (`main.ts`)
+1. Renderer, input, camera, audio, UI → the title screen (logo + loading bar) is up and **Start already works**: it calls `audio.unlock()` and `tilt.requestPermission()` synchronously in the tap, before anything is awaited.
+2. Rapier WASM, then `createWorldAsync` (course data, yield, meshes/colliders) with the bar moving. Ready on the calibrate screen stays disabled ("LOADING…") until the course exists.
+3. Race, HUD, flow; two cars parked on the grid; the camera orbits them behind the title; `body.ready`.
+
+World, race, AI, vehicles and HUD are registered in the loop as *slots* (in the documented order) that are filled in step 3.
 
 ## Scripts
 
@@ -294,5 +308,6 @@ Tests: `npm run audio-test` (in `npm test`) renders every generator in Node and 
 | `npm run typecheck` | strict TS for app and node scripts |
 | `npm test` | tilt maths, headless physics, race/AI and audio generator tests (no browser) |
 | `npm run race-test` | full headless races on TestGround (rules, scoring, difficulties) |
-| `npm run smoke` | serves `dist/` under `/dirt-race/`, plays spin → countdown → race → results → Race Again in headless Chrome, checks settings, SW/offline/rotate overlay, writes `screenshots/m1*.png` and `race-*.png` (`QUALITY=medium npm run smoke` for shadows) |
+| `npm run smoke` | serves `dist/` under `/dirt-race/`, plays spin → countdown → race → results → Race Again ×5 in headless Chrome. Checks: GPU memory/bodies flat across races, effects, settings, quality auto-drop + persistence, Low → simple terrain, Start-during-loading requests tilt permission inside the gesture (4× CPU throttle, fake iOS API), `?terrain=simple` renders, SW/offline/rotate overlay. Writes `screenshots/` (`QUALITY=medium npm run smoke` for shadows) |
+| `node scripts/world-shots.mjs` | after a build: every zone + `fx-splash/hay/confetti/summit` screenshots, draw calls/triangles per shot (`QUALITY=low|medium|high`, `ZONES=a,b`, `FX=1`) |
 | `npm run audio-render` | renders sounds via OfflineAudioContext in headless Chrome → `screenshots/audio/` |

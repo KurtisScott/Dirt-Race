@@ -3,7 +3,7 @@ import type { VehicleSpec } from './types';
 
 /**
  * The six vehicles from SPEC. Stats are the 1–5 design values; params.ts turns them into physics.
- * TODO(vehicles agent): fill in sizes/paints/blurbs for real models; tune in playtesting.
+ * Tune in playtesting (stats here, physics mapping in params.ts).
  */
 export const VEHICLES: Record<VehicleKind, VehicleSpec> = {
   sports: {

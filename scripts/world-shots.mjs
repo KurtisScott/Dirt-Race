@@ -142,6 +142,81 @@ for (const name of zones) {
   console.log(`  ${name.padEnd(7)} drawCalls=${info.calls} tris=${(info.tris / 1000).toFixed(0)}k surface=${info.surf} speed=${(info.speed * 3.6).toFixed(0)} km/h`);
 }
 
+// ---- effects shots: water splash at the ford, hay scatter, finish confetti, summit celebration.
+if (!process.env.ZONES || process.env.FX) {
+  const fxShot = async (name, setup, wait) => {
+    await page.evaluate(setup);
+    if (wait) await simWait(wait);
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: join(shots, `fx-${name}.png`) });
+    const n = await page.evaluate(() => ({ p: window.__dirt.fx.particles.count, d: window.__dirt.fx.debris.count, calls: window.__dirt.renderer.renderer.info.render.calls }));
+    console.log(`  fx-${name.padEnd(8)} particles=${n.p} pieces=${n.d} drawCalls=${n.calls}`);
+  };
+  // Splash: find the first water cell on the centre-line and drive into it.
+  const ford = await page.evaluate(() => {
+    const w = window.__dirt.world;
+    const z = w.zones.find((zz) => zz.id === 'river');
+    for (let s = z.startS; s < z.endS; s += 1) {
+      const p = w.track.pointAt(s);
+      if (w.surfaceAt(p.x, p.z) === 'water') return s;
+    }
+    return z.startS + 30;
+  });
+  await page.evaluate((s) => window.__dirt.player.reset(window.__dirt.world.data.spawnAt(s - 14, 0)), ford);
+  await page.keyboard.down('ArrowUp');
+  await fxShot('splash', () => {}, 1.9);
+  await page.keyboard.up('ArrowUp');
+  // Hay scatter + landing puff on the farm road.
+  await fxShot(
+    'hay',
+    () => {
+      const d = window.__dirt;
+      const w = d.world;
+      const z = w.zones.find((zz) => zz.id === 'farm');
+      d.player.reset(w.data.spawnAt(z.startS + 80, 0));
+      const p = w.track.pointAt(z.startS + 88);
+      d.events.emit('obstacle:hit', { kind: 'hay bale', racer: 'player', x: p.x, y: p.y + 0.6, z: p.z });
+    },
+    0.35,
+  );
+  // Confetti at the finish gantry (camera looks at the gantry from the road).
+  await fxShot(
+    'confetti',
+    () => {
+      const d = window.__dirt;
+      const w = d.world;
+      const s = w.track.finishS;
+      d.player.reset(w.data.spawnAt(s - 2, 0));
+      d.events.emit('race:finish', { racer: 'player', timeS: 120, winner: true });
+      const p = w.track.pointAt(s);
+      const t = w.track.tangentAt(s);
+      d.camera.override = (c) => {
+        c.position.set(p.x - t.x * 16, p.y + 3.5, p.z - t.z * 16);
+        c.lookAt(p.x, p.y + 4, p.z);
+        c.fov = 60;
+        c.updateProjectionMatrix();
+      };
+    },
+    1.0,
+  );
+  await page.evaluate(() => (window.__dirt.camera.override = null));
+  await fxShot(
+    'summit',
+    () => {
+      const d = window.__dirt;
+      const w = d.world;
+      const sm = w.summit;
+      void sm;
+      d.player.reset(w.data.spawnAt(w.track.summitS - 10, 0));
+      d.camera.override = null;
+      d.camera.snap();
+      d.events.emit('race:summit', { racer: 'player' });
+    },
+    0.7,
+  );
+  await page.evaluate(() => (window.__dirt.camera.override = null));
+}
+
 // Overview from high above the course, looking at the hill.
 await page.evaluate(() => {
   const w = window.__dirt.world;

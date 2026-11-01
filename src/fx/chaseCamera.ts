@@ -99,7 +99,7 @@ export class ChaseCamera implements System {
       this.pos.y += (desired.y - this.pos.y) * kv;
       this.look.lerp(lookAt, smoothing(dt, 0.06));
     }
-    // Never dip below the target's ground level (crude anti-clip for M1; world agent may add terrain test).
+    // Never dip below the target's height (crude anti-clip).
     this.pos.y = Math.max(this.pos.y, t.position.y + 0.8);
 
     this.camera.position.copy(this.pos);

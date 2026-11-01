@@ -50,7 +50,7 @@ export interface SurfaceQuery {
 
 /**
  * Everything the rest of the game needs from a world/level.
- * Implemented by TestGround (M1) and later by the real track (world agent).
+ * Implemented by RaceCourse (the real track) and TestGround (?level=test).
  */
 export interface World extends SurfaceQuery, System {
   readonly track: TrackPath;
