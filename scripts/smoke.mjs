@@ -155,6 +155,27 @@ const info = await page.evaluate(() => {
 });
 console.log(`  info quality=${info.quality} avgFrame=${info.frameMs.toFixed(1)}ms (software GL, not representative) drawCalls=${info.calls} tris=${info.tris}`);
 
+// Audio: context unlocked by the Start tap, engine running, event handlers tolerate everything.
+const audioInfo = await page.evaluate(async () => {
+  const d = window.__dirt;
+  const a = d.audio;
+  const ev = d.events;
+  const before = a.stats.oneShots;
+  ev.emit('race:countdown', { n: 3 });
+  ev.emit('race:go', {});
+  ev.emit('vehicle:landed', { racer: 'player', impact: 9 });
+  ev.emit('vehicle:collision', { racer: 'player', other: 'world', impulse: 5000 });
+  ev.emit('obstacle:hit', { kind: 'hay', racer: 'player', x: d.player.position.x + 2, y: 0, z: d.player.position.z });
+  ev.emit('animal:bump', { kind: 'duck', racer: 'player', x: d.player.position.x, z: d.player.position.z + 3 });
+  ev.emit('vehicle:surface', { racer: 'cpu', surface: 'mud' }); // no cpu attached: must be ignored quietly
+  ev.emit('spin:tick', { racer: 'player' });
+  ev.emit('race:summit', { racer: 'player' });
+  await new Promise((r) => setTimeout(r, 300));
+  return { state: a.ctx?.state, music: a.currentMusic, oneShots: a.stats.oneShots - before, vol: [a.musicVolume, a.sfxVolume] };
+});
+check(audioInfo.state === 'running', `audio context running after Start tap (${audioInfo.state})`);
+check(audioInfo.oneShots >= 6, `audio one-shots fired from bus events (${audioInfo.oneShots}), music=${audioInfo.music}`);
+
 // Pause screen
 await page.keyboard.press('KeyP');
 check(await page.isVisible('[data-screen="pause"]'), 'pause screen opens');

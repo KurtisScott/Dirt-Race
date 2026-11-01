@@ -1,4 +1,4 @@
-import type { QualityLevel, RacerId, SurfaceType } from './types';
+import type { QualityLevel, RacerId, SurfaceType, VehicleKind } from './types';
 
 /**
  * All cross-module events. Add new events here (one line each) rather than
@@ -22,6 +22,11 @@ export interface GameEvents {
   'race:done': { racer: RacerId };
   /** A reset was requested; the car moves after `delayS`. */
   'race:resetting': { racer: RacerId; delayS: number };
+  // Optional (added by audio; race/ui emit them when ready — listeners must tolerate them never firing):
+  /** Spin reel advanced one item (UI/race emits per visible tick; audio throttles). */
+  'spin:tick': { racer: RacerId };
+  /** Spin reel stopped on a vehicle. */
+  'spin:land': { racer: RacerId; kind: VehicleKind };
 
   // ---- vehicles (emitted by src/vehicles) ----
   'vehicle:reset': { racer: RacerId };
@@ -34,6 +39,8 @@ export interface GameEvents {
   // ---- world (emitted by src/world) ----
   'animal:crossing': { kind: string; x: number; z: number };
   'obstacle:hit': { kind: string; racer: RacerId; x: number; y: number; z: number };
+  /** Optional: a vehicle bumped an animal (kind as in animal:crossing). Audio plays the animal's voice. */
+  'animal:bump': { kind: string; racer: RacerId; x: number; z: number };
 
   // ---- settings / system ----
   'quality:changed': { level: QualityLevel; auto: boolean };

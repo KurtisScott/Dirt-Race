@@ -13,7 +13,7 @@ import { createWorld } from './world';
 import { RaceController, RaceFlow } from './race';
 import { AIDriver, createPhysicsSensor } from './ai';
 import { ChaseCamera, Effects } from './fx';
-import { AudioSystem } from './audio';
+import { AudioSystem, mountVolumeControls } from './audio';
 import { RaceHud, UI } from './ui';
 import { settings } from './core/settings';
 import { applyPendingUpdate, registerPWA } from './pwa';
@@ -197,6 +197,10 @@ async function boot(): Promise<void> {
       ].join('\n'),
   });
 
+  // Music / Effects volume rows on the pause/settings screen (persisted in settings).
+  const settingsGrid = ui.pause.el.querySelector('.settings-grid');
+  if (settingsGrid) mountVolumeControls(settingsGrid);
+
   const togglePause = (force?: boolean): void => {
     if (race.phase === 'title' || race.phase === 'calibrate' || race.phase === 'spin' || race.phase === 'results') return;
     paused = force ?? !paused;
@@ -249,6 +253,8 @@ async function boot(): Promise<void> {
     renderer,
     ui,
     world,
+    audio,
+    events,
   };
 }
 
