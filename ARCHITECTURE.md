@@ -33,7 +33,7 @@ scripts/           icons, headless physics/tilt tests, browser smoke test
 
 | File | Public surface |
 | --- | --- |
-| `types.ts` | `RacerId` (`'player' \| 'cpu'`), `SurfaceType`, `SurfaceProps`, `VehicleKind`, `VehicleStats`, `DriveInput {steer -1..1, throttle 0..1, brake 0..1}`, `SpawnPoint {x,y,z,yaw}` (y = **ground** height; yaw 0 = +Z), `QualityLevel`, `Sensitivity`, `Difficulty`, `CameraMode`, `System` |
+| `types.ts` | `RacerId` (`'player' \| 'cpu'`), `SpeedUnit` (`'mph' \| 'kmh'`), `SurfaceType`, `SurfaceProps`, `VehicleKind`, `VehicleStats`, `DriveInput {steer -1..1, throttle 0..1, brake 0..1}`, `SpawnPoint {x,y,z,yaw}` (y = **ground** height; yaw 0 = +Z), `QualityLevel`, `Sensitivity`, `Difficulty`, `CameraMode`, `System` |
 | `events.ts` | `events` (the single typed `EventBus<GameEvents>`), `GameEvents` map, `GamePhase`, `TiltStatus`, `RaceResults` |
 | `context.ts` | `GameContext {physics, renderer, loop, quality, overlay}`, passed to module constructors |
 | `loop.ts` | `GameLoop`: fixed 60 Hz physics with render interpolation. `add(system)`, `paused`, `simTime`, `stepOnce()` |
@@ -57,7 +57,7 @@ every system.update(frameDt, alpha)  ← input sampling, render-pose interpolati
 renderer.render()
 ```
 
-Systems run in **registration order** (see `main.ts`): input → world → race → vehicles → camera → fx → audio → HUD.
+Systems run in **registration order** (see `main.ts`): input → world → race → AI → vehicles → camera → fx → audio → HUD.
 
 ### Collision groups
 
@@ -139,21 +139,75 @@ PolylineTrack.fromControlPoints(ctrl, halfWidth, finishS, summitS)   // reusable
 
 ```ts
 class RaceController implements System, RaceView {
-  phase: GamePhase; elapsedS; timeLeftS; progress: Record<RacerId, RacerProgress>; config: RaceConfig;
-  setVehicle(racer, v); setPhase(p); startFreeDrive();
-  requestReset(racer, delay = 2 s); isResetting(racer); respawnFor(racer);
+  phase; elapsedS; timeLeftS; countdownLeftS; winner; progress: Record<RacerId, RacerProgress>; config; lastResults;
+  setVehicle(racer, v); setDriver(racer, input, control?);     // race owns vehicle.input (driver vs "hold")
+  startSpin(); startCountdown(); abort(); startFreeDrive(); setPhase(p);
+  requestReset(racer, delay = 2 s); isResetting(racer); respawnFor(racer); canDrive(racer); dispose();
 }
-RaceConfig { timeLimitS: 240, bonusTimeS: 45, finishAt: 'hillFoot' | 'summit', resetDelayS: 2 }
+RaceConfig { timeLimitS 240, bonusTimeS 45, finishAt 'hillFoot'|'summit', resetDelayS 2,
+             countdownS 3, resultsDelayS 1.5, summitRadiusM 7, cpuGraceS 12 }
+RacerProgress { s, bestS, lateral, checkpoint, finished, finishTimeS, summit, position, stage, bonusLeftS, points }
+class RaceFlow { newRace(); prepare(); quit(); vehicles; computer; picks; aiSystem; vehicleSystem }
+randomSpin(): VehiclePicks                                     // stub SpinFn until the vehicles spin lands
 session.score / session.add(racer, pts) / session.clear()     // localStorage
 ```
 
-Flips already auto-reset (`vehicle:flipped` → `requestReset(racer, 0.5)`). The race agent owns spin → countdown → racing → bonus → results, checkpoint and finish logic, and emitting `race:*` events (see the TODO block in `race/index.ts`).
+* **Phases:** `title → calibrate → spin → countdown → racing → bonus → results → (spin | title)`. Each racer also has a
+  `stage`: `waiting → racing → bonus → done`. The phase becomes `bonus` when the first car finishes.
+* **Who drives:** race assigns `vehicle.input` itself. It uses the driver's input (`PlayerInput.state` / `AIDriver.input`)
+  only while `canDrive(racer)` is true. Otherwise it uses a *hold* input that brakes to a stop and never reverses.
+  Don't use `vehicle.setFrozen()` for the countdown: its brake=1 makes a stopped car reverse. `control.enabled`
+  (PlayerInput / AIDriver) is toggled to match.
+* **Rules:** first across `finishS` wins 1 point. Each finisher gets its own 45 s bonus window, and reaching the summit
+  (`bestS ≥ summitS − 1` or within `summitRadiusM` of `world.summit`) gives +1. When the 4-minute timer runs out,
+  anyone still racing is done. If nobody finished, the higher `bestS` wins (a gap under 0.5 m is a tie with no
+  points). Once Brooks is done, the computer gets at most `cpuGraceS` more seconds. When every racer is done, the
+  results screen follows `resultsDelayS` later. Distances in the results are measured from the grid.
+* **Resets:** `requestReset` → `race:resetting` → teleport after the delay to the last checkpoint. On the bonus
+  hill the car goes back to the finish line instead. Flips auto-reset after 0.5 s. Resets are ignored when the car
+  can't drive.
+* **Spin integration:** pass `spin: SpinFn` (returns `{player, cpu}` picks) and `showSpin(picks) → Promise` (the reel UI)
+  to `RaceFlow`. Until those are merged, main uses `randomSpin` plus the placeholder `ui.spin` card.
+* **Events emitted:** `phase:changed`, `race:countdown {n}` (3, 2, 1), `race:go`, `race:checkpoint`,
+  `race:finish {winner}`, `race:bonus`, `race:summit`, `race:timeout`, `race:lead {leader}`, `race:resetting`,
+  `race:done`, `race:results` (`RaceResults` also carries optional `reason`, `finishM`, `summitM`).
+* `npm run race-test`: headless full races on TestGround (each difficulty, idle player / 4-minute timer, farthest rule,
+  tie, reset delay, Hard shortcut, AI cost). It's part of `npm test`.
 
 ## ai/
 
-`new AIDriver(vehicleState, world, difficulty)` produces `input: DriveInput`. Assign `cpuVehicle.input = ai.input`, then set `ai.enabled`. `onRequestReset` lets race handle stuck resets. The current naive line-follower exists only so others have a moving opponent to test against.
+`new AIDriver(vehicleState, world, difficulty, seed?)` writes `input` in **fixedUpdate** (register it before vehicles;
+`RaceFlow.aiSystem` does this). Optional members: `sensor: ObstacleSensor` (`createPhysicsSensor(physics, 'cpu')`,
+Rapier rays vs STATIC|DEBRIS|ANIMAL|VEHICLE), `rival: { gapM() }` (Easy eases off when ahead), `onRequestReset`.
+`DIFFICULTY` holds the per-level profile (topFrac 0.8/0.92/1, mistake frequency, line cut, shortcuts).
+
+* At construction it precomputes, for its own car: a racing line (lateral offset toward the inside of curves, smoothed)
+  and a speed profile (curvature × surface grip, slowed for steep descents and crests, then a backward braking pass).
+  Per step it does a pure-pursuit steer to a look-ahead of 5 + 0.55·v m and runs a throttle/brake P-controller. On
+  slopes steeper than 0.2 it holds full throttle (the bonus hill).
+* Obstacles: 5 rays at 12 Hz. Hits are stored in track space (s, lateral) for 1.5 s, and a tiny lane planner picks
+  the clear lateral offset closest to the line.
+* Stuck: reverses out when it's slow with throttle down, or does a three-point turn when facing backwards. With no
+  progress for 9 s (or after 3 recoveries) it calls `onRequestReset` (the same 2 s Reset as Brooks).
+* Mistakes (seeded): wobble, throttle lift, running wide, braking late. Easy every 5–10 s, Normal every 14–26 s, Hard never.
+* **World extras (optional, duck-typed):** `world.shortcuts?: TrackShortcut[]` (`{id, startS, endS, points, halfWidth?, maxSpeed?}`).
+  Hard follows a shortcut's points when it reaches `startS`. **World engineer:** expose the log bridge this way.
+* Cost: about 10 µs per step in Node, including rays.
 
 ## ui/
+
+`new UI(root, handlers: UIHandlers)` provides the title, calibrate ("hold it like a wheel"), and pause/settings screens plus `toast()`. Screens are plain HTML via the `Screen` helper. Buttons use `onTap` (a click on an element with `touch-action: manipulation`, which counts as a user activation on iOS). The UI reads `RaceView`, `VehicleState` and the event bus. It never touches physics. The HUD speedometer lives in `input/touch.ts` between the pedals (`touch.setSpeed(kmh, settings.speedUnit)`).
+
+Race UI (`ui/raceHud.ts`):
+* `RaceHud` (a System): position badge, race clock (red under 30 s), progress strip (start, finish flag, hill, summit
+  flag, both cars in their paint colours), bonus-hill banner with its own countdown, the big 3-2-1-GO (driven by
+  `race.countdownLeftS`, so it stays in sync with sim time), "Resetting…", and short messages (lead change,
+  win, summit, time's up).
+* `ResultsScreen` (`ui.results`): winner, how it was decided, a card per racer (vehicle, distance bar, finish time or
+  distance reached, summit bonus, points), session score, plus RACE AGAIN / Menu (`handlers.onRaceAgain`, `onResultsMenu`).
+* `SpinCard` (`ui.spin`): placeholder vehicle reveal, **superseded** by the reel in `ui/spin/` (wired via `RaceFlow.showSpin` in main.ts). Safe to delete.
+* Pause screen adds **Computer: Easy / Normal / Hard** (takes effect from the next race) and **Speed in: mph / km/h**
+  (`settings.speedUnit`, default mph; results distances are shown in feet or metres to match).
 
 **Vehicle spin** (`ui/spin/`, SPEC flow step 3):
 
@@ -162,13 +216,39 @@ runVehicleSpin(uiRoot, { rand?, force?: {player?, cpu?}, playerName?, cpuName?, 
   → Promise<{ player: {spec, paint}, cpu: {spec, paint} }>   // resolves when GO is tapped
 ```
 
-It adds a full-screen overlay (`[data-screen="spin"]`) with two slot-machine reels of rendered model cards. Brooks's reel lands first, then the Computer's. Stat bars (Top speed, Acceleration, Grip, Off-road, Hill climb) fill as each reel lands. GO (`[data-tap="spin-go"]`) appears after both reels stop, and the overlay removes itself on tap. Bus events: `spin:tick {racer}` (each card passing, for reel clatter), `spin:landed {racer, kind, paint}`, `spin:done {player, cpu}`. The race module should `setPhase('spin')`, await this, then create both vehicles with `VEHICLES[kind]` + paint. Dev page: `src/ui/spin/dev.html?seed=7&speed=1`. `node scripts/spin-shot.mjs` checks the spin screen and writes `screenshots/spin.png`.
+It adds a full-screen overlay (`[data-screen="spin"]`) with two slot-machine reels of rendered model cards. Brooks's reel lands first, then the Computer's. Stat bars (Top speed, Acceleration, Grip, Off-road, Hill climb) fill as each reel lands. GO (`[data-tap="spin-go"]`) appears after both reels stop, and the overlay removes itself on tap. Bus events: `spin:tick {racer}` (each card passing, for reel clatter), `spin:land {racer, kind}` (both consumed by audio), and `spin:done {player, cpu}`. **Wired into the race flow** in `main.ts`: `RaceFlowDeps.spin = pickVehicles` (random picks), and `showSpin = (picks) => showVehicleSpin(uiRoot, picks)` plays the reels landing on exactly those picks and resolves on GO. CSS classes are prefixed `vspin-` so they can't clash with the old placeholder's `.spin-*` styles. The placeholder `SpinCard` (`ui.spin`) is no longer shown but is still constructed, so `ui.show('spin')` keeps compiling. Dev page: `src/ui/spin/dev.html?seed=7&speed=1`. `node scripts/spin-shot.mjs` checks the spin screen and writes `screenshots/spin.png`.
 
-`new UI(root, handlers: UIHandlers)` provides the title, calibrate ("hold it like a wheel"), and pause/settings screens plus `toast()`. Screens are plain HTML via the `Screen` helper. Buttons use `onTap` (a click on an element with `touch-action: manipulation`, which counts as a user activation on iOS). The UI reads `RaceView`, `VehicleState` and the event bus. It never touches physics. The HUD speedometer lives in `input/touch.ts` between the pedals (`touch.setSpeed`).
 
 ## audio/
 
-`AudioSystem.unlock()` **must** be called synchronously in the Start tap (it already is). `attachVehicle(v)` reads `rpm`, `input.throttle`, `surface` and `wheels[].slip`. Subscribe to bus events for one-shots. `setCountdownVoice(urls | null)` is the swappable slot for Brooks's voice. Music and SFX volumes come from `settings`.
+All procedural (Web Audio): nothing is downloaded except optional countdown voice clips.
+
+| File | What |
+| --- | --- |
+| `index.ts` | `AudioSystem` (graph, vehicles, one-shots, music switching, event wiring) |
+| `engine.ts` | `ENGINE_PROFILES` per `VehicleSpec.engineSound`, `renderEngineLoop()` (pure JS), `EngineVoice` (loop → low-pass → gain → pan) |
+| `sfx.ts` | `SFX` one-shot generators, `LOOPS` (surface beds + tyre squeal), `animalVoice(kind)`, `obstacleSound(kind)` |
+| `music.ts` | `Sequencer` + `MENU_SONG` (104 bpm) / `RACE_SONG` (146 bpm) |
+| `voice.ts` | countdown voice slot (`public/audio/countdown-{3,2,1,go}.m4a`) |
+| `controls.ts` | `mountVolumeControls(settingsGrid)`: Music / Sound effects Off-Low-Med-High rows |
+
+```ts
+audio.unlock()                      // synchronously in the Start tap (already wired)
+audio.setSuspended(hidden)          // visibilitychange (already wired); pause mute comes from 'app:paused'
+audio.attachVehicle(v) / detachVehicle(v)   // race agent: attach the CPU car too, and swap on each new spin
+audio.playMusic('menu' | 'race' | null)     // normally automatic from 'phase:changed'
+audio.play('click' | 'chime' | ...)         // any SfxName one-shot
+audio.musicVolume / audio.sfxVolume         // 0..1 get/set, persisted via settings
+audio.setCountdownVoice(urls | null)
+```
+
+Graph: engines, tyres and one-shots go to the **game** bus and the sequencer goes to the **music** bus. Both feed **master**, which mutes on pause or hide, then a limiter, then the output. UI clicks use a **ui** bus that bypasses the pause mute. Engines and tyres only sound in `countdown`, `racing`, `bonus`, `freeDrive` and `results` (at half volume in `results`). The player's car is the listener: the CPU car and world sounds are attenuated (`1/(1+d/12)`), panned and low-passed by distance.
+
+**Events consumed:** `phase:changed` (music: title/calibrate/spin → menu, countdown → silence, racing/bonus/freeDrive → race, results → menu after 2.8 s), `app:paused`, `settings:changed`, `race:countdown` (voice clip or beep), `race:go` (horn, plus the voice clip if present), `race:checkpoint` (player chime), `race:finish` (cheer + win jingle, or "good try" jingle), `race:summit` (fanfare), `race:timeout` (buzzer), `vehicle:landed` (thump scaled by impact), `vehicle:collision` (crash / car bump / boing), `vehicle:surface` (splash / squelch / crunch on entering), `vehicle:flipped`, `vehicle:reset`, `obstacle:hit` (hay / cone / crash by `kind`), `animal:crossing`, and optional events (below). Per-frame state comes from `VehicleState`: `rpm`, `input.throttle`, `speed`, `surface`, `wheels[].slip/contact/surface`, `wheelsOnGround`, `airTime`, `position`, `forward`.
+
+**Optional events added for audio** (emit them when ready; nothing breaks if they never fire): `spin:tick {racer}` (one per reel item, throttled to 35 ms), `spin:land {racer, kind}`, `race:lead {leader}` (lead changes only), `animal:bump {kind, racer, x, z}`. Animal kinds are matched by substring (duck, mouse, deer, bear, croc), and anything else gets a boing. Obstacle kinds: hay/bale, cone, fence/crate/barrel → bump, anything else → crash.
+
+Tests: `npm run audio-test` (in `npm test`) renders every generator in Node and checks for NaN, clipping, silence, loop seams and render time. `npm run audio-render` renders through a real `OfflineAudioContext` in headless Chrome and writes `screenshots/audio/*.wav` + waveform PNGs, checking levels and dropouts.
 
 ## fx/
 
@@ -177,7 +257,7 @@ It adds a full-screen overlay (`[data-screen="spin"]`) with two slot-machine ree
 
 ## Debug hooks
 
-`window.__dirt` exposes `{loop, player, input, race, quality, renderer, ui, world}` for console poking and the smoke test. The pause screen shows quality, frame time, tilt status, draw calls and version.
+`window.__dirt` exposes `{loop, player, cpu, ai, flow, hud, input, race, quality, renderer, ui, world, audio, events}` (`player`/`cpu` are getters: cars are rebuilt every spin) for console poking and the smoke test. The pause screen shows quality, frame time, tilt status, draw calls and version.
 
 ## Scripts
 
@@ -186,5 +266,7 @@ It adds a full-screen overlay (`[data-screen="spin"]`) with two slot-machine ree
 | `npm run dev` | Vite dev server on LAN (`--host`). iOS tilt needs **HTTPS**, so test tilt on the deployed build or behind an HTTPS tunnel. |
 | `npm run build` | icons → typecheck → `dist/` (relative base, service worker, manifest) |
 | `npm run typecheck` | strict TS for app and node scripts |
-| `npm test` | tilt maths and headless physics tests (no browser) |
-| `npm run smoke` | serves `dist/` under `/dirt-race/`, drives in headless Chrome, checks SW/offline/rotate overlay, writes `screenshots/m1.png` (`QUALITY=medium npm run smoke` for shadows) |
+| `npm test` | tilt maths, headless physics, race/AI and audio generator tests (no browser) |
+| `npm run race-test` | full headless races on TestGround (rules, scoring, difficulties) |
+| `npm run smoke` | serves `dist/` under `/dirt-race/`, plays spin → countdown → race → results → Race Again in headless Chrome, checks settings, SW/offline/rotate overlay, writes `screenshots/m1*.png` and `race-*.png` (`QUALITY=medium npm run smoke` for shadows) |
+| `npm run audio-render` | renders sounds via OfflineAudioContext in headless Chrome → `screenshots/audio/` |

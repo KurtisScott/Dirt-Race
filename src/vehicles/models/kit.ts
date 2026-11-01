@@ -15,10 +15,22 @@ import type { VehicleParams } from '../types';
 
 // ------------------------------------------------------------------ materials
 
-let envMap: THREE.CubeTexture | null = null;
-/** Tiny procedural sky/ground cube map so paint, glass and chrome have something to reflect. */
-export function vehicleEnvMap(): THREE.CubeTexture {
-  if (envMap) return envMap;
+let envMap: THREE.CubeTexture | null | undefined;
+/**
+ * Tiny procedural sky/ground cube map so paint, glass and chrome have something to reflect.
+ * Returns null when no usable 2D canvas exists (headless tests with DOM shims).
+ */
+export function vehicleEnvMap(): THREE.CubeTexture | null {
+  if (envMap !== undefined) return envMap;
+  try {
+    envMap = makeEnvMap();
+  } catch {
+    envMap = null;
+  }
+  return envMap;
+}
+
+function makeEnvMap(): THREE.CubeTexture {
   const S = 64;
   const face = (kind: 'side' | 'top' | 'bottom'): HTMLCanvasElement | OffscreenCanvas => {
     const c = typeof document !== 'undefined' ? Object.assign(document.createElement('canvas'), { width: S, height: S }) : new OffscreenCanvas(S, S);
@@ -43,10 +55,10 @@ export function vehicleEnvMap(): THREE.CubeTexture {
     return c;
   };
   const side = face('side');
-  envMap = new THREE.CubeTexture([side, side, face('top'), face('bottom'), side, side] as unknown as HTMLImageElement[]);
-  envMap.colorSpace = THREE.SRGBColorSpace;
-  envMap.needsUpdate = true;
-  return envMap;
+  const tex = new THREE.CubeTexture([side, side, face('top'), face('bottom'), side, side] as unknown as HTMLImageElement[]);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
 }
 
 export type MatKey = 'paint' | 'glass' | 'trim' | 'chrome' | 'lamp' | 'tail';

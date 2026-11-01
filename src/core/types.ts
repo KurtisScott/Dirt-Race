@@ -58,6 +58,7 @@ export type QualityLevel = 'low' | 'medium' | 'high';
 export type Sensitivity = 'low' | 'medium' | 'high';
 export type Difficulty = 'easy' | 'normal' | 'hard';
 export type CameraMode = 'close' | 'far';
+export type SpeedUnit = 'mph' | 'kmh';
 
 /** Something the game loop ticks. All methods optional. */
 export interface System {

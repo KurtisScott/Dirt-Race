@@ -10,8 +10,11 @@
     "icons": "node scripts/gen-icons.mjs",
     "smoke": "node scripts/smoke.mjs",
     "physics-test": "tsx scripts/physics-test.ts",
-    "test": "tsx scripts/tilt-test.ts && tsx scripts/physics-test.ts",
-    "tilt-test": "tsx scripts/tilt-test.ts"
+    "test": "tsx scripts/tilt-test.ts && tsx scripts/physics-test.ts && tsx scripts/race-test.ts && tsx scripts/audio-test.ts",
+    "tilt-test": "tsx scripts/tilt-test.ts",
+    "race-test": "tsx scripts/race-test.ts",
+    "audio-test": "tsx scripts/audio-test.ts",
+    "audio-render": "node scripts/audio-render.mjs"
   },
   "author": "",
   "license": "ISC",

@@ -3,3 +3,5 @@ dist
 dev-dist
 *.log
 .DS_Store
+# Offline audio renders (regenerate with `npm run audio-render`); waveform PNGs are committed
+screenshots/audio/*.wav

@@ -24,6 +24,8 @@ export interface SpinOptions {
   speed?: number;
   /** Called when a card passes the window (audio can also listen to 'spin:tick'). */
   onTick?(racer: RacerId): void;
+  /** Aborting removes the overlay; the promise then never resolves (the race flow has moved on). */
+  signal?: AbortSignal;
 }
 
 const STAT_ROWS: { key: keyof VehicleStats; label: string }[] = [
@@ -42,7 +44,7 @@ const STAT_ROWS: { key: keyof VehicleStats; label: string }[] = [
  *
  *   const { player, cpu } = await runVehicleSpin(uiRoot);
  *
- * Also emits 'spin:tick' (each card passing, for reel clatter), 'spin:landed' and 'spin:done'.
+ * Also emits 'spin:tick' (each card passing, for reel clatter), 'spin:land' and 'spin:done'.
  */
 export function runVehicleSpin(root: HTMLElement, opts: SpinOptions = {}): Promise<SpinResult> {
   const rand = opts.rand ?? Math.random;
@@ -56,17 +58,17 @@ export function runVehicleSpin(root: HTMLElement, opts: SpinOptions = {}): Promi
   const thumb = (kind: VehicleKind, paint: number) => thumbs.get(`${kind}:${paint}`) ?? '';
 
   const el = document.createElement('div');
-  el.className = 'screen spin-screen';
+  el.className = 'screen vspin-screen';
   el.dataset.screen = 'spin';
   el.innerHTML = `
-    <div class="spin-wrap">
-      <h2 class="spin-title">Spin for your ride!</h2>
-      <div class="spin-cols">
+    <div class="vspin-wrap">
+      <h2 class="vspin-title">Spin for your ride!</h2>
+      <div class="vspin-cols">
         ${col('player', opts.playerName ?? 'Brooks')}
-        <div class="spin-vs">VS</div>
+        <div class="vspin-vs">VS</div>
         ${col('cpu', opts.cpuName ?? 'Computer')}
       </div>
-      <button class="big-btn spin-go" data-tap="spin-go" disabled>GO!</button>
+      <button class="big-btn vspin-go" data-tap="spin-go" disabled>GO!</button>
     </div>`;
   root.appendChild(el);
 
@@ -79,7 +81,7 @@ export function runVehicleSpin(root: HTMLElement, opts: SpinOptions = {}): Promi
   const fillStats = (racer: RacerId, pick: SpinPick) => {
     const box = el.querySelector<HTMLElement>(`[data-stats="${racer}"]`)!;
     box.classList.add('on');
-    box.querySelector('.spin-blurb')!.textContent = pick.spec.blurb;
+    box.querySelector('.vspin-blurb')!.textContent = pick.spec.blurb;
     STAT_ROWS.forEach((r, i) => {
       const bar = box.querySelector<HTMLElement>(`[data-stat="${r.key}"]`)!;
       bar.style.setProperty('--v', String(pick.spec.stats[r.key] / 5));
@@ -88,6 +90,7 @@ export function runVehicleSpin(root: HTMLElement, opts: SpinOptions = {}): Promi
     });
   };
 
+  opts.signal?.addEventListener('abort', () => el.remove(), { once: true });
   return new Promise<SpinResult>((resolve) => {
     const tick = (racer: RacerId) => {
       events.emit('spin:tick', { racer });
@@ -96,7 +99,7 @@ export function runVehicleSpin(root: HTMLElement, opts: SpinOptions = {}): Promi
     const land = (racer: RacerId, pick: SpinPick) => {
       el.querySelector(`[data-col="${racer}"]`)!.classList.add('landed');
       fillStats(racer, pick);
-      events.emit('spin:landed', { racer, kind: pick.spec.kind, paint: pick.paint });
+      events.emit('spin:land', { racer, kind: pick.spec.kind });
     };
     // Brooks first, then the Computer after a beat.
     setTimeout(() => {
@@ -125,12 +128,12 @@ export function runVehicleSpin(root: HTMLElement, opts: SpinOptions = {}): Promi
 
 function col(racer: RacerId, name: string): string {
   return `
-    <div class="spin-col" data-col="${racer}">
-      <div class="spin-name ${racer}">${name}</div>
-      <div class="spin-reel" data-reel="${racer}"><div class="spin-strip"><div class="spin-card spin-mystery"><b>?</b><span>Mystery ride</span></div></div><div class="spin-glare"></div></div>
-      <div class="spin-stats" data-stats="${racer}">
-        <p class="spin-blurb">&nbsp;</p>
-        ${STAT_ROWS.map((r) => `<div class="spin-stat"><span>${r.label}</span><i data-stat="${r.key}"><b></b></i></div>`).join('')}
+    <div class="vspin-col" data-col="${racer}">
+      <div class="vspin-name ${racer}">${name}</div>
+      <div class="vspin-reel" data-reel="${racer}"><div class="vspin-strip"><div class="vspin-card vspin-mystery"><b>?</b><span>Mystery ride</span></div></div><div class="vspin-glare"></div></div>
+      <div class="vspin-stats" data-stats="${racer}">
+        <p class="vspin-blurb">&nbsp;</p>
+        ${STAT_ROWS.map((r) => `<div class="vspin-stat"><span>${r.label}</span><i data-stat="${r.key}"><b></b></i></div>`).join('')}
       </div>
     </div>`;
 }
@@ -146,11 +149,11 @@ class Reel {
     private thumb: (k: VehicleKind, p: number) => string,
     private rand: () => number,
   ) {
-    this.strip = el.querySelector('.spin-strip')!;
+    this.strip = el.querySelector('.vspin-strip')!;
   }
 
   private card(kind: VehicleKind, paint: number): string {
-    return `<div class="spin-card" data-kind="${kind}"><img alt="" src="${this.thumb(kind, paint)}"><span>${VEHICLES[kind].name}</span></div>`;
+    return `<div class="vspin-card" data-kind="${kind}"><img alt="" src="${this.thumb(kind, paint)}"><span>${VEHICLES[kind].name}</span></div>`;
   }
 
   spin(target: SpinPick, ms: number, onTick: () => void, onDone: () => void): void {
@@ -166,7 +169,7 @@ class Reel {
     }
     if (cards[cards.length - 1].kind === target.spec.kind) cards.pop();
     cards.push({ kind: target.spec.kind, paint: target.paint });
-    this.strip.innerHTML = this.strip.innerHTML.includes('spin-mystery') ? this.strip.innerHTML + cards.map((c) => this.card(c.kind, c.paint)).join('') : cards.map((c) => this.card(c.kind, c.paint)).join('');
+    this.strip.innerHTML = this.strip.innerHTML.includes('vspin-mystery') ? this.strip.innerHTML + cards.map((c) => this.card(c.kind, c.paint)).join('') : cards.map((c) => this.card(c.kind, c.paint)).join('');
     const n = this.strip.children.length;
     const first = this.strip.firstElementChild as HTMLElement | null;
     const h = first?.offsetHeight || this.el.clientHeight || 220;
@@ -196,4 +199,17 @@ class Reel {
     };
     requestAnimationFrame(frame);
   }
+}
+
+/**
+ * Adapter for the race flow (`RaceFlowDeps.showSpin`): the race has already picked both vehicles;
+ * this plays the reels landing on exactly those picks and resolves when GO is tapped.
+ */
+export function showVehicleSpin(root: HTMLElement, picks: SpinResult, opts: Omit<SpinOptions, 'force'> = {}): Promise<void> {
+  return runVehicleSpin(root, { ...opts, force: picks }).then(() => undefined);
+}
+
+/** A `SpinFn`-compatible random pick (same as the race's stub): independent random vehicle + paint for each racer. */
+export function pickVehicles(rand: () => number = Math.random): SpinResult {
+  return { player: randomVehicle(rand), cpu: randomVehicle(rand) };
 }

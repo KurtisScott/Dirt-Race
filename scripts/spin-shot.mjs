@@ -27,7 +27,7 @@ await page.goto(`http://127.0.0.1:5198/src/ui/spin/dev.html?seed=${process.env.S
 await page.waitForSelector('[data-screen="spin"]');
 await page.waitForTimeout(1300);
 await page.screenshot({ path: join(shots, 'spin-mid.png') });
-await page.waitForSelector('.spin-go.ready', { timeout: 30000 });
+await page.waitForSelector('.vspin-go.ready', { timeout: 30000 });
 await page.waitForTimeout(3500);
 await page.screenshot({ path: join(shots, 'spin.png') });
 const ticks = await page.evaluate(() => window.__spin.ticks);
@@ -36,7 +36,7 @@ const shown = await page.evaluate(() =>
   ['player', 'cpu'].map((r) => {
     const reel = document.querySelector(`[data-reel="${r}"]`);
     const box = reel.getBoundingClientRect();
-    const card = [...reel.querySelectorAll('.spin-card')].find((c) => Math.abs(c.getBoundingClientRect().top - box.top - reel.clientTop) < 4);
+    const card = [...reel.querySelectorAll('.vspin-card')].find((c) => Math.abs(c.getBoundingClientRect().top - box.top - reel.clientTop) < 4);
     return card?.dataset.kind;
   }),
 );
@@ -50,10 +50,10 @@ check(!(await page.$('[data-screen="spin"]')), 'spin overlay removed after GO');
 // Small landscape (iPad split view / phone) layout sanity: no horizontal overflow.
 await page.setViewportSize({ width: 740, height: 400 });
 await page.goto(`http://127.0.0.1:5198/src/ui/spin/dev.html?seed=3&speed=6`);
-await page.waitForSelector('.spin-go.ready', { timeout: 30000 });
+await page.waitForSelector('.vspin-go.ready', { timeout: 30000 });
 await page.waitForTimeout(800);
 await page.screenshot({ path: join(shots, 'spin-small.png') });
-const overflow = await page.evaluate(() => { const r = document.querySelector('.spin-go').getBoundingClientRect(); return document.querySelector('.spin-wrap').scrollWidth > window.innerWidth + 1 || r.bottom > window.innerHeight; });
+const overflow = await page.evaluate(() => { const r = document.querySelector('.vspin-go').getBoundingClientRect(); return document.querySelector('.vspin-wrap').scrollWidth > window.innerWidth + 1 || r.bottom > window.innerHeight; });
 check(!overflow, 'fits a small landscape screen (GO fully visible)');
 check(errors.length === 0, `no console errors ${errors.join(' | ')}`);
 await browser.close();
