@@ -369,15 +369,16 @@ check(worldInfo.zones.startsWith('town,farm,mud,rocky,desert,river') && worldInf
   const cdp = await g.context().newCDPSession(g);
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
   await g.goto(`http://localhost:${PORT}/dirt-race/`, { waitUntil: 'commit' });
-  await g.waitForSelector('[data-screen="title"]:not([hidden])', { timeout: 60000 });
-  await g.click('[data-tap="start"]');
+  // Generous timeouts: 4x CPU throttle on software GL is very slow and load-dependent (was flaky at 30–60 s).
+  await g.waitForSelector('[data-screen="title"]:not([hidden])', { timeout: 180000 });
+  await g.click('[data-tap="start"]', { timeout: 180000 });
   const perm = await g.evaluate(() => window.__perm);
   check(perm.calls === 1 && perm.inGesture, `Start asks for tilt permission synchronously in the tap (calls ${perm.calls}, in gesture ${perm.inGesture})`);
   // The course build yields only between its two halves, so whether the (headless) click lands before it
   // finishes depends on timing: informational.
   console.log(`  info Start was handled ${perm.whileLoading ? 'while the course was still building' : 'after the course finished building'}`);
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
-  await g.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 90000 });
+  await g.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 180000 });
   check(await g.isEnabled('[data-tap="ready"]'), 'Ready enables once the course is built');
   await g.close();
 }
