@@ -1,4 +1,4 @@
-import type { QualityLevel, RacerId, SurfaceType } from './types';
+import type { QualityLevel, RacerId, SurfaceType, VehicleKind } from './types';
 
 /**
  * All cross-module events. Add new events here (one line each) rather than
@@ -22,6 +22,14 @@ export interface GameEvents {
   'vehicle:collision': { racer: RacerId; other: 'vehicle' | 'obstacle' | 'animal' | 'world'; impulse: number };
   'vehicle:flipped': { racer: RacerId };
   'vehicle:surface': { racer: RacerId; surface: SurfaceType };
+
+  // ---- vehicle spin screen (emitted by src/ui/spin) ----
+  /** A card passed the reel window (reel clatter sound). */
+  'spin:tick': { racer: RacerId };
+  /** A reel stopped on a vehicle. */
+  'spin:landed': { racer: RacerId; kind: VehicleKind; paint: number };
+  /** Go tapped: both picks final. */
+  'spin:done': { player: { kind: VehicleKind; paint: number }; cpu: { kind: VehicleKind; paint: number } };
 
   // ---- world (emitted by src/world) ----
   'animal:crossing': { kind: string; x: number; z: number };

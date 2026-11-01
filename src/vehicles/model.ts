@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { VehicleParams, VehicleSpec } from './types';
+import type { VehicleParams, VehicleSpec, VehicleState } from './types';
 
 /**
  * Visual model contract. `root` is placed at the chassis collider centre each frame;
@@ -9,8 +9,11 @@ import type { VehicleParams, VehicleSpec } from './types';
 export interface VehicleModel {
   root: THREE.Group;
   wheels: THREE.Object3D[];
-  /** Optional: called every frame for extra animation (e.g. body lean). */
-  animate?(dt: number): void;
+  /**
+   * Optional: called every frame after the wheels are placed, for extra animation (body lean, brake
+   * lights). `state` (optional, added in vehicles M2) is the owning vehicle.
+   */
+  animate?(dt: number, state?: VehicleState): void;
   dispose(): void;
 }
 

@@ -6,7 +6,8 @@ import { Group, groups, RAPIER, type PhysicsWorld } from '../core/physics';
 import type { DriveInput, RacerId, SpawnPoint, SurfaceType } from '../core/types';
 import { SURFACES } from '../world/surfaces';
 import type { SurfaceQuery } from '../world/types';
-import { buildPlaceholderModel, type ModelBuilder, type VehicleModel } from './model';
+import type { ModelBuilder, VehicleModel } from './model';
+import { buildVehicleModel } from './models/build';
 import { paramsFromSpec } from './params';
 import type { Vehicle, VehicleParams, VehicleSpec, WheelState } from './types';
 
@@ -183,7 +184,7 @@ class RaycastVehicle implements Vehicle {
     }
 
     // ---- visuals
-    this.model = (o.modelBuilder ?? buildPlaceholderModel)(o.spec, o.paint, p);
+    this.model = (o.modelBuilder ?? buildVehicleModel)(o.spec, o.paint, p);
     this.object = this.model.root;
     o.parent?.add(this.object);
     this.pose = new InterpolatedPose(this.body);
@@ -457,7 +458,7 @@ class RaycastVehicle implements Vehicle {
       // Steer about Y, then spin about the axle (X).
       w.rotation.set(rot, i < 2 ? this.steerAngle : 0, 0, 'YXZ');
     }
-    this.model.animate?.(_dt);
+    this.model.animate?.(_dt, this);
   }
 
   private syncRenderState(): void {
