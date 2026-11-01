@@ -532,12 +532,22 @@ h2 {
   color: var(--ink);
 }
 .debug {
+  /* Only with ?debug=1. Top-left under the Reset button, clear of the menu and the speedometer. */
+  position: absolute;
+  top: calc(92px + var(--safe-t));
+  left: calc(16px + var(--safe-l));
   margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.45);
   font:
-    12px ui-monospace,
+    11px ui-monospace,
     monospace;
-  opacity: 0.7;
   text-align: left;
+  pointer-events: none;
+}
+.debug[hidden] {
+  display: none;
 }
 
 /* calibrate illustration */

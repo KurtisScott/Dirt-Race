@@ -77,6 +77,14 @@ const LOGO_SVG = `
  * HTML screens: title (logo, loading bar, Start, How to play, first-launch tip), calibrate
  * ("hold it like a wheel"), how-to-play card, pause/settings, results, toast.
  */
+function hasDebugFlag(): boolean {
+  try {
+    return new URLSearchParams(location.search).get('debug') === '1';
+  } catch {
+    return false;
+  }
+}
+
 export class UI {
   readonly root: HTMLElement;
   readonly title: Screen;
@@ -88,6 +96,8 @@ export class UI {
   private toastTimer = 0;
   private helpReturn: ScreenName = 'title';
   private courseLoaded = false;
+  /** Developer stats on the pause screen, only with `?debug=1` (never shown to a kid). */
+  private readonly showDebug = hasDebugFlag();
 
   constructor(
     root: HTMLElement,
@@ -180,7 +190,7 @@ export class UI {
            <button class="mid-btn" data-tap="pause-help">How to play</button>
            <button class="mid-btn" data-tap="menu">Menu</button>
          </div>
-         <pre class="debug" data-role="debug"></pre>
+         <pre class="debug" data-role="debug" hidden></pre>
        </div>`,
       'pause',
     );
@@ -327,7 +337,11 @@ export class UI {
       else s.hide();
     }
     if (name !== 'results') this.results.hide();
-    if (name === 'pause') this.pause.q('[data-role="debug"]').textContent = this.handlers.debugInfo();
+    if (name === 'pause') {
+      const pre = this.pause.q('[data-role="debug"]');
+      pre.hidden = !this.showDebug;
+      pre.textContent = this.showDebug ? this.handlers.debugInfo() : '';
+    }
     if (name === 'title') this.maybeShowTip();
   }
 
