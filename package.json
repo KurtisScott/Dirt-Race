@@ -14,7 +14,8 @@
     "tilt-test": "tsx scripts/tilt-test.ts",
     "race-test": "tsx scripts/race-test.ts",
     "audio-test": "tsx scripts/audio-test.ts",
-    "audio-render": "node scripts/audio-render.mjs"
+    "audio-render": "node scripts/audio-render.mjs",
+    "world-test": "tsx scripts/world-test.ts"
   },
   "author": "",
   "license": "ISC",

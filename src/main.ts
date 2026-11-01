@@ -42,7 +42,7 @@ async function boot(): Promise<void> {
 
   // ---- modules (registration order = update order)
   const input = loop.add(new PlayerInput(overlay));
-  const world = loop.add(createWorld(ctx, 'test'));
+  const world = loop.add(createWorld(ctx, new URLSearchParams(location.search).get('level') === 'test' ? 'test' : 'race'));
   const race = loop.add(new RaceController(world));
 
   // Per-race vehicles + computer driver live in RaceFlow (rebuilt on every spin).
