@@ -2,7 +2,9 @@ import type { InputAction } from './types';
 
 /**
  * Large multi-touch on-screen controls: gas (bottom right), brake/reverse (bottom left),
- * optional left/right steering buttons (fallback when tilt is unavailable),
+ * optional left/right steering buttons (fallback when tilt is unavailable). With the steering buttons
+ * showing (`.with-steer`), ◀ ▶ sit side by side bottom-left and brake stacks above gas on the right,
+ * so each thumb has one job (CSS only; the elements and pointer tracking are the same),
  * and top buttons (reset top-left, pause top-right, camera).
  *
  * Uses Pointer Events with per-pointer tracking so gas + steer work simultaneously.
