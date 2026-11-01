@@ -388,7 +388,7 @@ function monster(c: Ctx): Design {
   links.push({ a: { wheel: 0, offset: V(-0.3, 0, 0), noSteer: true }, b: { wheel: 1, offset: V(0.3, 0, 0), noSteer: true }, radius: 0.08, color: C.darkGrey });
   links.push({ a: { wheel: 2, offset: V(-0.3, 0, 0), noSteer: true }, b: { wheel: 3, offset: V(0.3, 0, 0), noSteer: true }, radius: 0.08, color: C.darkGrey });
   void wx;
-  return { wheel: { radius: r, width: 0.66, rim: 0.5, spokes: 6, lug: 0.035, seg: 20, dish: 0.16, face: 0x3a3d42 }, links };
+  return { wheel: { radius: r, width: 0.66, rim: 0.5, spokes: 6, lug: 0.035, seg: 16, dish: 0.16, face: 0x3a3d42 }, links };
 }
 
 // =========================================================================== BUGGY

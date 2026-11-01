@@ -65,7 +65,7 @@ export function renderVehicleThumbnails(
         shadow.scale.set(spec.size.width * 1.9, 1, len * 1.25);
         shadow.position.y = 0.005;
         // 3/4 front view from the left-front, framed to the vehicle's size.
-        const dist = Math.max(len, h * 1.6) * 2.25;
+        const dist = Math.max(len, h * 1.5) * 1.95;
         cam.position.set(dist * 0.62, h * 0.55 + dist * 0.32, dist * 0.78);
         cam.lookAt(0, h * 0.42, 0);
         renderer.render(scene, cam);

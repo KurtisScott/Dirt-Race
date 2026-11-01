@@ -100,8 +100,14 @@ paramsFromSpec(spec) → VehicleParams     // the ONE place stats become physics
 * Physics: Rapier `DynamicRayCastVehicleController`. Chassis local axes are **+Z forward, +Y up, +X left**. The chassis is a round-cuboid plus a massless roof collider. Mass properties are set explicitly with a lowered centre of mass, CCD is on, and the car never sleeps.
 * Assists in `vehicle.ts`: speed-sensitive and rate-limited steering, roll PD assist (strongest for the sedan), air levelling, surface grip/drag/rolling resistance (reduced by the off-road stat), hill-climb torque boost when nose-up, coasting decel, hold-still brake, brake-to-reverse below 0.6 m/s.
 * Emits `vehicle:surface`, `vehicle:landed {impact}`, `vehicle:flipped` (on side/roof and slow for 1.5 s), `vehicle:reset`.
-* **Models** (`model.ts`): implement `ModelBuilder = (spec, paint, params) => VehicleModel {root, wheels[4], animate?, dispose}`. The root sits at the chassis collider centre. Each wheel is centred on its axle with the axle along local X; the vehicle positions and rotates it. M1 has one placeholder pickup-ish model for every kind.
-* `npm run physics-test` drives all 6 vehicles headless (settle, 0-60, top speed, full-lock turn, slalom, braking, reverse, coast, ramp jump) and fails on regressions. Run it after tuning.
+* **Models** (`model.ts`): implement `ModelBuilder = (spec, paint, params) => VehicleModel {root, wheels[4], animate?(dt, state?), dispose}`. The root sits at the chassis collider centre. Each wheel is centred on its axle with the axle along local X; the vehicle positions and rotates it. The default builder is now `buildVehicleModel` (`models/build.ts`): six procedural models, 3.1k–3.6k triangles each, 9–10 draw calls (paint, glass, trim, chrome, lamp, tail, 2 per wheel style, 1 instanced suspension rig). `buildPlaceholderModel` is still exported.
+  * `models/loft.ts`: lofted bodies (side profile + plan width + 9-point cross-section with tumblehome, fender bulges and wheel arches). `models/kit.ts`: shared materials (procedural env map; paint is `MeshPhysicalMaterial` with clearcoat on High only), wheel builder, part merging. `models/rig.ts`: shocks/arms/axles as one `InstancedMesh` that follows the wheels.
+  * Body motion: `animate` leans and dips the body from wheel travel (on top of the physics pose) and lights the brake lights when `state.input.brake` is held while moving forward.
+  * `renderVehicleThumbnails(items?, size?) → {kind, paint, url}[]`: PNG data URLs of the real models (3/4 view, transparent). Uses one short-lived WebGL context, cached per kind and paint.
+  * Dev only: `src/vehicles/dev/preview.html?kind=sports|…|all|thumbs&view=34|side|rear|top&q=low|medium|high`. `node scripts/vehicle-shots.mjs [each|all|<kind>] [view] [quality]` writes `screenshots/vehicle-<kind>.png`.
+* `npm run physics-test` drives all 6 vehicles headless (settle, 0-60, top speed, full-lock turn, slalom, braking, reverse, coast, ramp jump) and fails on regressions. It then runs the **personality checks** with the real `SURFACES` table: speed per surface, a 20°/28°/36° gravel bonus-hill climb, a 36° hill start, a suspension bounce test and a log crawl. Run only those with `npx tsx scripts/physics-test.ts personality`. Run it after tuning.
+* Optional `VehicleParams.climbTraction` (added in vehicles M2): on steep (> 6°) non-flat ground, engine force is capped at `mass·g·cos(slope)·climbTraction·(surfaceGrip/gravelGrip)`. It comes from the hill-climb stat, and tyre friction is raised to match so the stat, not Rapier wheelspin, decides who climbs.
+* Surface top-speed caps live in `SURFACE_SPEED_PENALTY` (vehicle.ts), scaled by `1 − offroad`. The top-speed fade is compensated for aero, rolling resistance and damping, so flat-asphalt top speed equals `params.topSpeed`.
 
 ## world/
 
@@ -148,6 +154,15 @@ Flips already auto-reset (`vehicle:flipped` → `requestReset(racer, 0.5)`). The
 `new AIDriver(vehicleState, world, difficulty)` produces `input: DriveInput`. Assign `cpuVehicle.input = ai.input`, then set `ai.enabled`. `onRequestReset` lets race handle stuck resets. The current naive line-follower exists only so others have a moving opponent to test against.
 
 ## ui/
+
+**Vehicle spin** (`ui/spin/`, SPEC flow step 3):
+
+```ts
+runVehicleSpin(uiRoot, { rand?, force?: {player?, cpu?}, playerName?, cpuName?, speed?, onTick? })
+  → Promise<{ player: {spec, paint}, cpu: {spec, paint} }>   // resolves when GO is tapped
+```
+
+It adds a full-screen overlay (`[data-screen="spin"]`) with two slot-machine reels of rendered model cards. Brooks's reel lands first, then the Computer's. Stat bars (Top speed, Acceleration, Grip, Off-road, Hill climb) fill as each reel lands. GO (`[data-tap="spin-go"]`) appears after both reels stop, and the overlay removes itself on tap. Bus events: `spin:tick {racer}` (each card passing, for reel clatter), `spin:landed {racer, kind, paint}`, `spin:done {player, cpu}`. The race module should `setPhase('spin')`, await this, then create both vehicles with `VEHICLES[kind]` + paint. Dev page: `src/ui/spin/dev.html?seed=7&speed=1`. `node scripts/spin-shot.mjs` checks the spin screen and writes `screenshots/spin.png`.
 
 `new UI(root, handlers: UIHandlers)` provides the title, calibrate ("hold it like a wheel"), and pause/settings screens plus `toast()`. Screens are plain HTML via the `Screen` helper. Buttons use `onTap` (a click on an element with `touch-action: manipulation`, which counts as a user activation on iOS). The UI reads `RaceView`, `VehicleState` and the event bus. It never touches physics. The HUD speedometer lives in `input/touch.ts` between the pedals (`touch.setSpeed`).
 

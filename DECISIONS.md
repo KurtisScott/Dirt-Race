@@ -45,3 +45,27 @@ Decisions made without the family (they're on a flight). Each one is easy to rev
 
 ### Not done in M1 (owned by other agents per ARCHITECTURE.md)
 - Real track, terrain, obstacles, animals, hill (world). Race rules, spin, countdown, results (race/ui). AI. Audio. Particles and skid marks (fx). Per-kind vehicle models.
+
+## Vehicles M2 (models, tuning, spin), 2026-11-01
+
+### Physics tuning
+- **Top speeds now hit their targets.** The engine fade targets a higher internal top speed, solved per vehicle so that engine force equals aero + asphalt rolling + linear damping exactly at `params.topSpeed`. Measured on flat asphalt: sports 151, muscle 133, pickup 115, buggy 115, monster 97, sedan 95 km/h (targets 151/133/115/115/97/97). The original stat→target mapping (`lerp(22, 42, top)` m/s) is unchanged.
+- **Surface speed caps for road cars** (`SURFACE_SPEED_PENALTY`, scaled by 1 − off-road): mud 70%, sand 50%, water 40%, gravel 18%, dirt 12% for an off-road-1 car. Results after 12 s of full throttle: sports car 150 km/h on asphalt vs 38 in mud; monster 96 vs 78; buggy 115 vs 105 on sand (fastest on sand). The sedan does 30 in mud, which is fine: it's grandma's.
+- **Hill climbing is decided by the hill-climb stat.** New optional `climbTraction` param (0.6 → 1.1 for stat 1 → 5) caps drive force on slopes over 6° (blended in to 12°), and tyre friction on steep slopes is raised above that cap. Without this, Rapier's friction model either let everything climb or collapsed into wheelspin and let nothing climb. On a 36° gravel hill start (4 s): monster 8.8 m, pickup 8.3, muscle 2.5, buggy 1.6, sports slides back 1.5, sedan slides back 2.7. With a run-up on a 20°→28°→36° hill, everyone except the sedan summits on momentum, and the sedan stalls about 30 of 48 m up. **The real bonus hill (world agent) decides how "nearly impossible" feels:** the steeper and longer its top section, the more the stat matters.
+- **Buggy is under-damped** (compression 0.3·crit, relaxation 0.4·crit, versus 0.55/0.75 for the rest), so it's visibly bouncy. It's the only vehicle with a second rebound in the drop test.
+- Monster truck and pickup crawl over a half-sunk 0.6 m log at half throttle. The sports car, muscle car and sedan can't.
+
+### Models
+- **Lofted bodies rather than extrusions.** Plain profile extrusions read as "boxes with a side shape" from the chase camera. Each body is lofted instead: a side profile, a plan-width function, and a 9-point cross-section with sill tuck, shoulder, tumblehome greenhouse, crowned hood and fender bulges over the wheel arches. Glass is assigned per station range on the same mesh (windscreen, side windows, rear window), so windows sit flush and cost no extra geometry.
+- **One material per role, vertex colours for detail:** paint (per vehicle, stripes and two-tone roof via vertex colours), glass, trim, chrome, lamp and tail are shared, and the tail colour changes for brake lights. Everything per role is merged, giving 9–10 draw calls per vehicle including wheels and the suspension rig.
+- **Paint:** `MeshStandardMaterial` (roughness 0.3, small metalness) with a tiny procedural sky cube env map for reflections. On **High only** it's a `MeshPhysicalMaterial` with clearcoat. Paint colours are unchanged from the catalog.
+- **Triangles:** sports 3068, muscle 3316, sedan 3252, buggy 3128, pickup 3576, monster 3574. Wheels are about 1.3–1.6k of that. These are slightly over the ~3k guidance; two cars on screen is about 7k triangles, which is trivial even for the A10X. Lowering the wheel segment count from 12 to 10 would bring every model under 3k if needed.
+- **Visible suspension:** wheels move with physics travel. The body also leans and dips (up to about 3.5°) from wheel travel. The monster truck and buggy have animated shocks, A-arms and axles (one InstancedMesh each).
+- Monster-truck shocks are orange, and buggy coil-overs use an accent colour. All vehicles are generic: no logos, badges or real-brand grille shapes.
+
+### Spin screen
+- A plain HTML/CSS overlay in `src/ui/spin/` with its own CSS file, styled like the title screen (navy glass, orange buttons, rounded type). It does **not** use backdrop-filter, which is expensive over WebGL on old iPads.
+- Card art is the real 3D models, rendered once to PNG thumbnails (18 images: 6 kinds × 3 paints) in a throwaway WebGL context. That takes about 100–300 ms on first spin, and the results are cached.
+- The reel animates with `transform: translate3d` + rAF and an ease-out with a slight settle. Each card passing emits `spin:tick` for the audio agent's reel clatter.
+- The Computer's reel shows a "?" mystery card until it spins. GO only appears once both reels have landed.
+- The `runVehicleSpin()` function (promise) is the integration point. Events are for audio and fx. `main.ts` is **not** wired to it: that's the race agent's flow (title → calibrate → spin → countdown).
