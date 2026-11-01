@@ -373,6 +373,12 @@ class RaycastVehicle implements Vehicle {
       const cap = p.mass * 9.81 * Math.sqrt(1 - slopeSin * slopeSin) * mu * throttle;
       const k = clamp((slopeDeg - 6) / 6, 0, 1);
       f = Math.min(f, f + (cap - f) * k);
+      // Power limit on steep climbs (14° → 20°): sets the crawl speed, so run-up speed bleeds off.
+      if (p.climbPower !== undefined && slopeDeg > 14) {
+        const pk = clamp((slopeDeg - 14) / 6, 0, 1);
+        const pcap = (p.mass * p.climbPower * throttle) / Math.max(v, 1.5);
+        f = Math.min(f, f + (pcap - f) * pk);
+      }
     }
     return f;
   }

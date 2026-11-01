@@ -67,6 +67,12 @@ export interface VehicleParams {
    * friction coefficient: engine force is capped at mass·g·cos(slope)·climbTraction. Defaults to 0.85.
    */
   climbTraction?: number;
+  /**
+   * Optional: engine power available on steep climbs, in W/kg (drive force ≤ mass·climbPower/speed,
+   * blended in from 14° to 20° nose-up). It sets the crawl speed up the bonus hill, so a run-up is
+   * bled off and the hill-climb stat decides how long the climb takes. Unset = no power limit.
+   */
+  climbPower?: number;
   /** Roll-stability assist strength (Nm per rad of excess roll). Sedan is very high. */
   antiRoll: number;
   /** Air control torque factor (small: lets the car level out in the air). */

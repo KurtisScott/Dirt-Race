@@ -4,6 +4,26 @@ import type { VehicleParams, VehicleSpec } from './types';
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 /** Map a 1..5 stat to 0..1. */
 const n = (stat: number): number => Math.min(1, Math.max(0, (stat - 1) / 4));
+/** Look up a per-stat table (index 0 = stat 1), interpolating between entries. */
+const byStat = (table: readonly number[], stat: number): number => {
+  const x = Math.min(table.length - 1, Math.max(0, stat - 1));
+  const i = Math.min(table.length - 2, Math.floor(x));
+  return lerp(table[i], table[i + 1], x - i);
+};
+
+/**
+ * Bonus-hill tuning by hill-climb stat (1..5). The hill tops out at 38.5° of loose gravel, which needs a
+ * traction coefficient of ≈ 0.80 + rolling resistance (≈ 0.83–0.85 in total) to keep moving.
+ *  - CLIMB_TRACTION: max drive force on steep loose slopes = mass·g·cos(slope)·μ. Sedan (1) stalls about
+ *    40% up; sports (2) sits right at the limit (needs a run-up); muscle/buggy (3) have a thin margin;
+ *    pickup (4) and monster (5) climb reliably.
+ *  - CLIMB_POWER (W/kg): drive force ≤ mass·P/speed on slopes over 14°. Sets the crawl speed on the steep
+ *    top (P / ~6.5 m/s²: about 2.8 m/s for the sports car up to 5.5 m/s for the monster), so a run-up is
+ *    bled off on the lower slope and the stat decides how long the climb takes.
+ * Measured times are in DECISIONS.md ("Bonus hill retune"); world-test asserts the ordering.
+ */
+export const CLIMB_TRACTION = [0.62, 0.835, 0.875, 0.96, 1.05] as const;
+export const CLIMB_POWER = [14, 18, 20, 28, 36] as const;
 
 /**
  * Stats (1–5) → physics. This is the single place to tune how vehicles feel.
@@ -66,9 +86,9 @@ export function paramsFromSpec(spec: VehicleSpec): VehicleParams {
     drive: spec.drive,
     offroad: off,
     climbBoost: lerp(0.0, 1.6, climb),
-    // Traction limit on steep loose slopes, as a friction coefficient (hill needs ≈ 0.76 at 35°).
-    // Sedan (1) can't hold the steepest part; sports (2) barely; 3+ climbs; monster (5) easily.
-    climbTraction: lerp(0.6, 1.1, climb),
+    // Traction limit and crawl power on steep loose slopes (see CLIMB_TRACTION / CLIMB_POWER above).
+    climbTraction: byStat(CLIMB_TRACTION, s.hillClimb),
+    climbPower: byStat(CLIMB_POWER, s.hillClimb),
     antiRoll: spec.kind === 'sedan' ? 9 : spec.kind === 'buggy' ? 3 : 5,
     airControl: 0.6,
     linearDamping: 0.02,

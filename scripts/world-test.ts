@@ -2,7 +2,8 @@
  * Headless course test (no browser): builds the real RaceCourse with Rapier and drives it with a simple
  * centre-line follower (pure pursuit + speed from curvature), for several vehicles. Checks:
  *  - each car reaches the finish line without getting trapped (resets to the last checkpoint allowed, counted);
- *  - the bonus hill: pickup/monster can reach the summit, the sedan can't (or barely);
+ *  - the bonus hill: the hill-climb stat decides it (monster/pickup summit in ~15–25 s, buggy/muscle slowly,
+ *    sports only barely with a run-up, sedan never), asserted as ordering + time windows;
  *  - surfaces per zone, checkpoint spacing, spawn placement, animals bump and never stop a car,
  *    the off-road verge and valley walls keep a car that steers away inside the world.
  * Run: npm run world-test   (WORLD_KINDS=pickup,sedan to limit)
@@ -274,8 +275,26 @@ for (const kind of kinds) {
   check(r.finishedAt !== null, `${kind} reaches the finish line (${r.finishedAt?.toFixed(1) ?? 'never'} s)`);
   check(r.stuckAt.length <= 1, `${kind} never trapped (${r.stuckAt.length} stuck resets)`);
 }
-if (results.pickup) check(results.pickup.summitAt !== null, `pickup climbs the bonus hill to the summit flag`);
-if (results.monster) check(results.monster.summitAt !== null, `monster truck climbs the bonus hill`);
+// Bonus hill after a full race (arriving at speed): the hill-climb stat must clearly decide it
+// (SPEC: "hard to get up", sedan "nearly impossible"). Times are seconds after crossing the finish line.
+const BONUS_WINDOW = 45;
+const after = (r?: DriveResult): number | null => (r && r.summitAt !== null && r.finishedAt !== null ? r.summitAt - r.finishedAt : null);
+const fmt = (x: number | null, r?: DriveResult): string => (x !== null ? `${x.toFixed(1)} s` : `stalled ${r?.hillBestUp.toFixed(0)} m up`);
+const inRange = (x: number | null, lo: number, hi: number): boolean => x !== null && x >= lo && x <= hi;
+const slowerThan = (a: number | null, b: number | null): boolean => b !== null && (a === null || a > b);
+if (results.pickup) { const x = after(results.pickup); check(inRange(x, 12, 30), `pickup summits reliably but not trivially (${fmt(x, results.pickup)}, want 12–30 s)`); }
+if (results.monster) { const x = after(results.monster); check(inRange(x, 12, 30), `monster truck summits reliably but not trivially (${fmt(x, results.monster)}, want 12–30 s)`); }
+for (const k of ['buggy', 'muscle'] as const) {
+  if (!results[k]) continue;
+  const x = after(results[k]);
+  check(inRange(x, 20, BONUS_WINDOW), `${k} makes it with its run-up, slowly (${fmt(x, results[k])}, want 20–${BONUS_WINDOW} s)`);
+  for (const strong of ['pickup', 'monster'] as const) if (results[strong]) check(slowerThan(x, after(results[strong])), `${k} climbs slower than the ${strong}`);
+}
+if (results.sports) {
+  const x = after(results.sports);
+  check(x === null || x >= 30, `sports car (hill-climb 2) only barely makes it with a run-up (${fmt(x, results.sports)}, want ≥ 30 s or a stall)`);
+  for (const mid of ['buggy', 'muscle'] as const) if (results[mid]) check(slowerThan(x, after(results[mid])), `sports car climbs slower than the ${mid}`);
+}
 if (results.sedan) check(results.sedan.summitAt === null, `grandma's sedan cannot make the summit (best ${results.sedan.hillBestUp.toFixed(1)} m up)`);
 if (results.pickup && results.sedan) check(results.pickup.hillBestUp > results.sedan.hillBestUp, 'pickup climbs higher than the sedan');
 
@@ -286,8 +305,12 @@ for (const kind of kinds) {
   const r = (standing[kind] = drive(kind, { fromFinish: true, animals: false, maxS: 60 }));
   console.log(`  info ${kind}: ${r.summitAt !== null ? `summit in ${r.summitAt.toFixed(1)} s` : `stalled ${r.hillBestUp.toFixed(1)} m up`}`);
 }
-if (standing.pickup) check(standing.pickup.summitAt !== null && standing.pickup.summitAt < 40, `pickup summits from a standing start within the 45 s bonus window (${standing.pickup.summitAt?.toFixed(1)} s)`);
-if (standing.monster) check(standing.monster.summitAt !== null, 'monster summits from a standing start');
+const st = (k: string): number | null => standing[k]?.summitAt ?? null;
+if (standing.pickup) check(inRange(st('pickup'), 15, 35), `pickup summits from a standing start within the bonus window (${fmt(st('pickup'), standing.pickup)}, want 15–35 s)`);
+if (standing.monster) check(inRange(st('monster'), 15, 30), `monster summits from a standing start (${fmt(st('monster'), standing.monster)}, want 15–30 s)`);
+if (standing.monster && standing.pickup) check(slowerThan(st('pickup'), st('monster')), 'monster (hill-climb 5) beats the pickup (4) from a standing start');
+for (const k of ['buggy', 'muscle'] as const) if (standing[k] && standing.pickup) check(slowerThan(st(k), st('pickup')), `${k} (hill-climb 3) is slower than the pickup from a standing start (${fmt(st(k), standing[k])})`);
+if (standing.sports) check(st('sports') === null || st('sports')! > 38, `sports car fails (or only just makes it) without a run-up (${fmt(st('sports'), standing.sports)})`);
 if (standing.sedan) check(standing.sedan.summitAt === null, `sedan stalls from a standing start (${standing.sedan.hillBestUp.toFixed(1)} m up)`);
 
 if (!process.env.WORLD_KINDS || process.env.WORLD_SHORTCUT) {
@@ -352,13 +375,14 @@ if (!process.env.WORLD_KINDS || process.env.WORLD_AI) {
     physics.dispose();
     return { finish, summit, resets, shortcut: onShortcut > 30, best };
   };
-  for (const [kind, d] of [['pickup', 'hard'], ['pickup', 'easy'], ['sedan', 'normal'], ['monster', 'normal']] as const) {
+  for (const [kind, d] of [['pickup', 'hard'], ['pickup', 'easy'], ['sedan', 'normal'], ['monster', 'normal'], ['buggy', 'normal'], ['sports', 'normal']] as const) {
     const r = aiRun(kind, d);
     console.log(`  info ${kind}/${d}: finish ${r.finish?.toFixed(1) ?? '—'} s, summit ${r.summit !== null && r.finish !== null ? `+${(r.summit - r.finish).toFixed(1)} s` : `no (best ${r.best.toFixed(1)} m up)`}, resets ${r.resets}, log bridge ${r.shortcut ? 'yes' : 'no'}`);
     check(r.finish !== null && r.resets <= 1, `computer ${kind} on ${d} completes the course (${r.resets} resets)`);
     if (d === 'hard') check(r.shortcut, 'Hard computer takes the log bridge');
     if (d === 'easy') check(!r.shortcut, 'Easy computer stays on the road (ford)');
-    if (kind === 'pickup' || kind === 'monster') check(r.summit !== null, `computer ${kind} climbs the bonus hill`);
+    if (kind === 'pickup' || kind === 'monster' || kind === 'buggy') check(r.summit !== null && r.finish !== null && r.summit - r.finish <= 45, `computer ${kind} climbs the bonus hill inside the 45 s window`);
+    if (kind === 'sports') check(r.summit !== null || r.best > 40, `computer sports car makes a real attempt at the hill (best ${r.best.toFixed(0)} m up)`);
     if (kind === 'sedan') check(r.summit === null, 'computer sedan cannot climb the bonus hill');
   }
 }

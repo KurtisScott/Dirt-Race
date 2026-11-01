@@ -20,7 +20,7 @@ export type SegmentTag = 'riverLoop0' | 'riverLoopEnd' | 'ford' | 'finishStraigh
 export const HILL_CLIMB_M = 150;
 export const SUMMIT_PLATEAU_R = 7;
 /** Steepest angle of the climb (reached near the top), and the angle at the foot. */
-export const HILL_MAX_DEG = 37;
+export const HILL_MAX_DEG = 38.5;
 export const HILL_FOOT_DEG = 6;
 
 /**

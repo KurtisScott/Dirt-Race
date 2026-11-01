@@ -171,8 +171,8 @@ if (!ONLY || ONLY === 'personality') {
   check(ALL.every((k) => k === 'sedan' || sp[k].asphalt > sp.sedan.asphalt) || sp.sedan.asphalt <= sp.monster.asphalt + 0.5, `sedan is among the slowest on asphalt (${kmh(sp.sedan.asphalt)} km/h)`);
 
   /**
-   * Bonus hill: 10 m flat gravel run-up from rest, then 20° and 28° for 30 m each and 36° for 40 m, flat summit (≈ 48 m high).
-   * `steep` = seconds spent on the 36° section (traction-limited, so it reflects the hill-climb stat).
+   * Bonus hill: 10 m flat gravel run-up from rest, then 20° and 28° for 30 m each, 36° for 40 m and a short 18° round-over, flat summit (≈ 48 m high).
+   * `steep` = seconds spent on the 36° section (traction- and climb-power-limited, so it reflects the hill-climb stat). 60 s limit: the climb-3 cars crawl.
    * Returns climb time to the summit (or -1) and best height reached.
    */
   const hill = (kind: VehicleKind): { t: number; h: number; top: number; steep: number } => {
@@ -181,13 +181,14 @@ if (!ONLY || ONLY === 'personality') {
       [20, 30],
       [28, 30],
       [36, 40],
+      [18, 4], // short round-over like the real hill (a sharp 36°→flat lip high-centres low cars at crawl speed)
     ];
     let z = 10;
     let y = 0;
     let steepZ = 0;
     const w = 6;
     for (const [deg, len] of segs) {
-      steepZ = z;
+      if (deg === 36) steepZ = z;
       const dz = len * Math.cos((deg * Math.PI) / 180);
       const dy = len * Math.sin((deg * Math.PI) / 180);
       const pts = new Float32Array([-w, -1, z, w, -1, z, -w, y, z, w, y, z, -w, -1, z + dz, w, -1, z + dz, -w, y + dy, z + dz, w, y + dy, z + dz]);
@@ -203,7 +204,7 @@ if (!ONLY || ONLY === 'personality') {
     let t = -1;
     let h = 0;
     let t0 = -1;
-    step(60 * 30, (i) => {
+    step(60 * 60, (i) => {
       h = Math.max(h, v.position.y);
       if (t0 < 0 && v.position.z > steepZ) t0 = i * PHYSICS_DT;
       if (t < 0 && v.position.z > z + 2 && v.position.y > y) t = i * PHYSICS_DT;

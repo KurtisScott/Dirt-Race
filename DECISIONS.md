@@ -138,7 +138,7 @@ Decisions made without the family (they're on a flight). Each one is easy to rev
 - Tree trunks within 25 m of the road and the house walls have colliders. Everything farther out is scenery only (saves colliders: about 620 total).
 
 ### Bonus hill
-- Profile: 6° at the foot, rising to 26° over the first 45 m, then 26°→37° held over the last ~25 m, a round-over and a 14 m plateau with the flag. 150 m long horizontally, 79 m high. Loose gravel everywhere on the mound. 
+- *(Superseded by "Bonus hill retune" below: now 38.5° max, and the climb is power-limited.)* Profile: 6° at the foot, rising to 26° over the first 45 m, then 26°→37° held over the last ~25 m, a round-over and a 14 m plateau with the flag. 150 m long horizontally, 79 m high. Loose gravel everywhere on the mound. 
 - Tuned against the merged vehicles (`climbTraction`). With a run-up, pickup, monster, buggy, muscle and sports all summit in about 7 s. **The sedan stalls at about 47 m of 79** (about 38 m from a standing start). From a standing start at the finish line, every car except the sedan summits in 9–12 s, well within the 45 s bonus window. "Hard" here means steep, loud and scary rather than a coin-flip for the pickup. If playtesting wants it harder for the pickup too, raise `HILL_MAX_DEG` or `HILL_CLIMB_M` in `layout.ts`. The sports car is then the first to drop out.
 - The summit flag, pole and beacon use `fog: false`, so the gold flag reads from the start line even on Low.
 
@@ -208,3 +208,28 @@ Decisions made without the family (they're on a flight). Each one is easy to rev
 ### Cleanup
 - Removed the placeholder `SpinCard` and its CSS, `buildPlaceholderModel`, and stale TODO/M1 comments. `randomSpin` stays as RaceFlow's default for headless tests.
 - Added `.github/workflows/pages.yml`, which tests, builds and deploys to GitHub Pages.
+
+## Bonus hill retune (independent check), 2026-11-01
+
+The check found the hill too easy: 5 of 6 cars summited in 7–12 s of the 45 s window, and the hill-climb stat barely mattered (sports car, stat 2: 11.7 s from a standing start; monster, stat 5: 10.2 s). The cause: the traction cap only limits *force*, so every car built 18–28 m/s on the lower slope and coasted over the short steepest section on momentum.
+
+- **New `climbPower` (W/kg) per vehicle:** on slopes over 14° (fully at 20°) drive force is also capped at `mass·climbPower/speed`. That gives a stat-dependent crawl speed on the steep top (≈ P / 6.5 m/s²), so run-up speed bleeds off on the lower slope and the stat decides how long the climb takes. Jump ramps (~8°) and the rest of the course stay below 14°, so race finish times are unchanged.
+- **Per-stat tables in `vehicles/params.ts`** (index = hill-climb stat 1..5) instead of a linear lerp, because the targets are not linear:
+  - `CLIMB_TRACTION = [0.62, 0.835, 0.875, 0.96, 1.05]` (was `lerp(0.6, 1.1)`). The 38.5° top needs ≈ 0.80 + rolling resistance ≈ 0.83–0.85, so the sports car sits right at the limit, muscle/buggy have a thin margin, and pickup/monster have plenty.
+  - `CLIMB_POWER = [14, 18, 20, 28, 36]` W/kg.
+- **`HILL_MAX_DEG` 37 → 38.5** in `world/layout.ts` (profile and `HILL_CLIMB_M = 150` unchanged; the hill is now 81 m high). That's still "~35°" to the eye, steepest near the top. The hill surface stays plain gravel (no new surface type).
+- **Measured (`npm run world-test`, centre-line, full throttle; seconds after the finish line):**
+
+  | Vehicle (hill-climb) | After a full race (run-up) | Standing start at the finish line |
+  | --- | --- | --- |
+  | Monster truck (5) | 17.4 s | 23.3 s |
+  | Pickup (4) | 19.5 s | 27.7 s |
+  | Dune buggy (3) | 23.0 s | 35.2 s |
+  | Muscle car (3) | 26.2 s | 37.3 s |
+  | Sports car (2) | 35.7 s (barely; stalls 77 of 81 m from a 0 s run-up in a harness) | 50.2 s (outside the 45 s window) |
+  | Grandma's sedan (1) | stalls 34 m up | stalls 34 m up |
+
+  The computer driver (Normal): monster +18.0 s, buggy +24.3 s, pickup +19.5 s (Hard) / +21.4 s (Easy), sports stalls 75 m up then resets, sedan stalls 34 m up. The AI already holds full throttle uphill and reverses/retries, then Resets to the finish line when stalled; no AI change was needed.
+- The sports car's result is deliberately on a knife edge (a good run-up and a straight line get it up; a wobble doesn't). A diagonal line lowers the effective slope, so a clever kid can also zig-zag it.
+- **world-test now asserts the tuning:** pickup/monster 12–30 s after the race, buggy/muscle 20–45 s and slower than both, sports ≥ 30 s or a stall and slower than buggy/muscle, sedan never; from a standing start monster < pickup < buggy/muscle, sports fails or > 38 s; computer pickup/monster/buggy summit inside 45 s and the computer sports car gets > 40 m up. The synthetic physics-test hill got a short 18° round-over (a sharp 36°→flat lip high-centred the low muscle car at crawl speed, which the real hill's round-over doesn't do) and a 60 s limit.
+- If playtesting finds it too hard for the buggy/muscle car, raise `CLIMB_POWER[2]` (speed) or `CLIMB_TRACTION[2]` (whether it makes it); for the sports car, `CLIMB_TRACTION[1]` 0.835 → 0.85 makes it summit from a standing start in about 42 s.
