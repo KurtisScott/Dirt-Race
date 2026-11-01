@@ -1,4 +1,4 @@
-import type { QualityLevel, RacerId, SurfaceType } from './types';
+import type { QualityLevel, RacerId, SurfaceType, VehicleKind } from './types';
 
 /**
  * All cross-module events. Add new events here (one line each) rather than
@@ -14,6 +14,19 @@ export interface GameEvents {
   'race:summit': { racer: RacerId };
   'race:timeout': Record<string, never>;
   'race:results': RaceResults;
+  /** The leading car changed during the race (not emitted at GO). */
+  'race:lead': { leader: RacerId };
+  /** A racer crossed the finish line and its bonus-hill window started. */
+  'race:bonus': { racer: RacerId; seconds: number };
+  /** A racer's race is over (summit reached, bonus window ran out, or time ran out). */
+  'race:done': { racer: RacerId };
+  /** A reset was requested; the car moves after `delayS`. */
+  'race:resetting': { racer: RacerId; delayS: number };
+  // Optional (added by audio; race/ui emit them when ready — listeners must tolerate them never firing):
+  /** Spin reel advanced one item (UI/race emits per visible tick; audio throttles). */
+  'spin:tick': { racer: RacerId };
+  /** Spin reel stopped on a vehicle. */
+  'spin:land': { racer: RacerId; kind: VehicleKind };
 
   // ---- vehicles (emitted by src/vehicles) ----
   'vehicle:reset': { racer: RacerId };
@@ -26,6 +39,8 @@ export interface GameEvents {
   // ---- world (emitted by src/world) ----
   'animal:crossing': { kind: string; x: number; z: number };
   'obstacle:hit': { kind: string; racer: RacerId; x: number; y: number; z: number };
+  /** Optional: a vehicle bumped an animal (kind as in animal:crossing). Audio plays the animal's voice. */
+  'animal:bump': { kind: string; racer: RacerId; x: number; z: number };
 
   // ---- settings / system ----
   'quality:changed': { level: QualityLevel; auto: boolean };
@@ -50,6 +65,11 @@ export interface RaceResults {
   winner: RacerId | null;
   racers: RacerResult[];
   session: Record<RacerId, number>;
+  /** Optional detail: how the winner was decided ('finish' = first across the line, 'distance' = timer ran out, 'tie'). */
+  reason?: 'finish' | 'distance' | 'tie';
+  /** Optional: distance of the finish line / summit along the track (m), for result bars. */
+  finishM?: number;
+  summitM?: number;
 }
 
 type Handler<T> = (payload: T) => void;

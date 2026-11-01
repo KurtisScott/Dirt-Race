@@ -45,3 +45,52 @@ Decisions made without the family (they're on a flight). Each one is easy to rev
 
 ### Not done in M1 (owned by other agents per ARCHITECTURE.md)
 - Real track, terrain, obstacles, animals, hill (world). Race rules, spin, countdown, results (race/ui). AI. Audio. Particles and skid marks (fx). Per-kind vehicle models.
+
+## Race, AI and race HUD (race agent), 2026-11-01
+
+### Rules and flow
+- **The race owns `vehicle.input`.** It switches between the driver's input and a "hold" input (brake to a stop, then release). I didn't use `vehicle.setFrozen()`, because its brake=1 makes a stopped car reverse (it rolled 14 m backwards in 4 s on the grid). Pressing gas during 3-2-1 does nothing; the test checks the cars move 0.00 m.
+- **Every finisher gets its own 45 s bonus-hill window**, so the loser can still earn the summit point (SPEC). The finish point goes to the first car across. The summit counts within 7 m of the flag or at the end of the centre-line.
+- **Brooks isn't kept waiting.** Once his race is over (summit, bonus window used, or timer), the computer gets at most 12 s more (`cpuGraceS`). After that the results show 1.5 s after the last car is done.
+- **Timer rule:** cars still racing at 4:00 stop. If nobody finished, the higher *farthest-reached* distance wins 1 point. A gap under 0.5 m is a tie and nobody scores. If one car finished, it already won; the other car's distance is shown but doesn't matter.
+- **Results distances** are measured from the grid. A finisher shows at least the finish distance.
+- **Reset on the bonus hill** returns the car to the finish line (bottom of the hill), not to a checkpoint back down the track.
+- **Race Again** spins new random cars for both (SPEC). The placeholder spin card has a "LET'S RACE!" button so Brooks controls when the countdown starts. The real reel replaces it.
+- **Lead-change events** use a 2 m hysteresis so two cars side by side don't spam `race:lead`. No lead event fires at GO.
+- **Pause** is allowed during countdown/racing/bonus only, not on spin or results.
+
+### Computer driver
+- **No speed cheating.** It uses the same vehicle and physics, and the speed caps are fractions of *its own* car's top speed (80 / 92 / 100 %). Easy also eases off up to 40 % when more than 35 m ahead of Brooks. No rubber-band *boost* when behind.
+- The **speed profile is precomputed per car** from curvature, surface grip (with the car's off-road stat), steep descents and crests, plus a backward braking pass. Per step it only does a pure-pursuit steer, a P-controller on speed, and 5 rays at 12 Hz. That costs about 10 µs per step in Node.
+- **On slopes steeper than ~11° it holds full throttle**, so it actually tries the bonus hill. This is unverified on a real 35° hill: TestGround is flat. Revisit once the real hill is in.
+- **Mistakes:** wobble, throttle lift, running wide, braking late. Easy every 5–10 s, Normal every 14–26 s, Hard never.
+- **Shortcut contract:** Hard takes any `world.shortcuts[]` it reaches (optional and duck-typed, so the World interface is unchanged). The world engineer should publish the log bridge as `{id:'log-bridge', startS, endS, points}`.
+- **Stuck handling:** reverse out (with mirrored steer). After 9 s with no progress or 3 failed recoveries it asks for a Reset and waits out the same 2 s as Brooks.
+
+### HUD / settings
+- **mph by default**, with km/h in Pause → "Speed in". The results show distances in feet with mph and metres with km/h. Internally everything stays SI.
+- **Difficulty** is in Pause → "Computer". Changing it mid-race applies from the next race (toast says so), so the current opponent doesn't suddenly change.
+- The big 3-2-1-GO is driven by race sim time, not CSS timers, so it can't drift on a slow iPad frame.
+- Progress-strip markers use the cars' paint colours, with YOU/CPU labels.
+- Names on screen are "Brooks" and "Computer" (SPEC).
+## Audio, 2026-11-01
+
+- **Everything is synthesized**, with no audio files shipped. Loops and one-shots are rendered into `AudioBuffer`s in plain JS (deterministic, seeded), lazily or in ~6 ms idle chunks starting 250 ms after the Start tap. That's about 1 s of total CPU on a desktop, spread out. Loops render at 24 kHz and one-shots at 32 kHz, and the context resamples. Buffer memory is about 3 MB. Zero bytes of download. Music is sequenced live from short oscillator notes.
+- **Engines = one looping buffer per vehicle kind**, pitched by `playbackRate` (rpm) and brightened by one low-pass (rpm + throttle). Cost per car: 1 source + 1 biquad + 1 gain + 1 panner. Main-thread cost of `AudioSystem.update` is about 0.016 ms/frame (measured headless). AudioParam updates are skipped when the change is tiny. The loop length is an integer number of firing periods, so it loops seamlessly (seam check in tests). Characters:
+  - muscle **v8**: uneven cross-plane burble, pops on lift-off
+  - pickup **truck**: smoother, lower V8
+  - **monster**: 30 Hz, sub-heavy
+  - **sport**: smooth flat-six with tonal scream, about 5× rev range
+  - **buggy**: buzzy twin with a nasal whine
+  - grandma **sedan**: weedy 4-cylinder with 9% misfires, a slow pitch wobble, a cough on lift-off and an occasional idle cough (the comedic one)
+- **CPU car** uses the same engine voice, attenuated `0.75/(1+d/12)`, panned relative to the player's heading and low-passed with distance. The player's car is the listener (the camera follows it).
+- **Tyres:** one surface bed per car (asphalt road roar is quiet; dirt, gravel, mud, sand and water are louder), crossfaded on change and scaled by speed and slip. Squeal comes **only from asphalt slip** (`wheels[].slip` above about 0.35). Off-road slip makes the bed louder instead. Entering water, mud or gravel above 3 m/s also triggers a one-shot splash, squelch or crunch.
+- **Landing** thumps scale with `impact` (soft below about 7 m/s, hard with metal clank above). Big air (>0.45 s) gives a soft whoosh.
+- **Animals** sound cartoonish and friendly: quack, squeak, bleat (deer), a gentle grunt (bear), a croc "clack-clack + purr", plus a boing on contact. They are never hurt or pained.
+- **Volumes:** use `settings.musicVolume` / `sfxVolume` (persisted by `core/settings`, which already wraps localStorage in try/catch). The gain curve is squared for a usable low end. Music sits at 0.55× under effects. Settings get **Off / Low / Med / High** segmented buttons instead of sliders (big kid-sized targets that match the existing UI), mounted into the pause screen via `mountVolumeControls()` with one line in main.ts.
+- **Mute:** pausing ramps master to 0 in 40 ms (UI clicks still play). Hiding the app suspends the context (already wired in main). The context resumes on the next touch, keydown, `pageshow` or `focus`, and on `statechange` (covers iOS "interrupted" after calls or Siri). A DynamicsCompressor limiter on the output prevents clipping when many sounds stack. At most 12 one-shots play at once, with per-sound cooldowns.
+- **Music:** hand-written (not random) 16-bar A-A-B-C songs, so they're pleasant on repeat. Menu: 104 bpm swing, music-box lead, walking bass, light drums. Race: 146 bpm, square lead, octave bass, full drums. A lead-less arpeggio "break" section gives the ears a rest. No music during the countdown (the beeps need to be heard). Results bring the menu loop back after 2.8 s so the cheer and jingle land first.
+- **Countdown voice slot:** the build lists `public/audio/countdown-{3,2,1,go}.{m4a,mp3,wav,ogg}` (in `vite.config.ts` → `__COUNTDOWN_VOICE__`), so the runtime never fetches missing files (no 404s, works offline). The service worker precaches them. Any missing clip falls back to its beep. GO plays the clip plus a quieter horn. `decodeAudioData` uses the callback form for older Safari. **For Brooks:** record each word on the iPad (Voice Memos), trim it so the word starts right away, export or share it as `.m4a`, name the files `countdown-3.m4a`, `countdown-2.m4a`, `countdown-1.m4a` and `countdown-go.m4a`, put them in `public/audio/`, then run `npm run build` and deploy.
+- **Optional events added to `GameEvents`** (for the race and world agents to emit): `spin:tick`, `spin:land`, `race:lead`, `animal:bump`. Every handler is wrapped in try/catch and tolerates events that never fire.
+- UI clicks use one capture-phase `pointerdown` listener on `button, [data-tap], [data-action]` (pedals excluded), so the UI module needs no changes.
+- `screenshots/audio/*.wav` are gitignored (about 4 MB, regenerate with `npm run audio-render`). The waveform PNGs are committed.

@@ -10,6 +10,17 @@ export interface RaceConfig {
   finishAt: 'hillFoot' | 'summit';
   /** Wait before a manual reset takes effect (SPEC: 2 s). */
   resetDelayS: number;
+  /** Length of the 3-2-1 countdown before GO, seconds. */
+  countdownS: number;
+  /** Pause between "everyone is done" and the results screen (finish celebration), seconds. */
+  resultsDelayS: number;
+  /** Summit counts when within this horizontal distance (m) of world.summit, or past track.summitS. */
+  summitRadiusM: number;
+  /**
+   * Once Brooks's race is over (summit, bonus window used up, or timer), the computer gets at most this
+   * many more seconds to finish / climb, so a kid isn't left watching a 45 s computer hill climb.
+   */
+  cpuGraceS: number;
 }
 
 export const DEFAULT_RACE_CONFIG: RaceConfig = {
@@ -17,13 +28,28 @@ export const DEFAULT_RACE_CONFIG: RaceConfig = {
   bonusTimeS: 45,
   finishAt: 'hillFoot',
   resetDelayS: 2,
+  countdownS: 3,
+  resultsDelayS: 1.5,
+  summitRadiusM: 7,
+  cpuGraceS: 12,
 };
+
+/**
+ * Where a racer is in its own race:
+ * waiting (before GO) → racing → bonus (crossed the finish, 45 s on the hill) → done.
+ * A racer still racing when the timer runs out goes straight to done.
+ */
+export type RacerStage = 'waiting' | 'racing' | 'bonus' | 'done';
 
 /** Per-racer live progress, read by UI (progress strip/position) and AI (rubber-banding). */
 export interface RacerProgress {
   racer: RacerId;
   /** Distance along track.path, metres (monotonic-ish; uses project with hint). */
   s: number;
+  /** Farthest distance reached this race (used for the timer/farthest rule and the results). */
+  bestS: number;
+  /** Signed distance from the centre-line (m, > 0 = right of travel). */
+  lateral: number;
   /** Highest checkpoint index passed (−1 = none). */
   checkpoint: number;
   finished: boolean;
@@ -31,6 +57,11 @@ export interface RacerProgress {
   summit: boolean;
   /** 1 or 2. */
   position: 1 | 2;
+  stage: RacerStage;
+  /** Seconds left in this racer's bonus-hill window (0 when not in bonus). */
+  bonusLeftS: number;
+  /** Points earned this race so far (finish win + summit). */
+  points: number;
 }
 
 /** Read-only view of the race for UI/AI/audio. */
@@ -40,4 +71,14 @@ export interface RaceView {
   readonly elapsedS: number;
   readonly timeLeftS: number;
   readonly progress: Readonly<Record<RacerId, RacerProgress>>;
+  /** Seconds left in the 3-2-1 countdown (0 outside the countdown). Optional for older views. */
+  readonly countdownLeftS?: number;
+  /** Winner once decided (first across the finish, or by distance when time runs out). */
+  readonly winner?: RacerId | null;
+  readonly config?: Readonly<RaceConfig>;
+}
+
+/** Something whose input can be switched on/off by the race (PlayerInput, AIDriver). */
+export interface DriverControl {
+  enabled: boolean;
 }

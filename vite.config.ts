@@ -1,14 +1,20 @@
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
+
+// Countdown voice clips Brooks records (public/audio/countdown-{3,2,1,go}.{m4a,mp3,wav,ogg}).
+// Listed at build time so the game never probes for missing files at runtime (see src/audio/voice.ts).
+const voiceDir = new URL('./public/audio/', import.meta.url);
+const countdownVoice = existsSync(voiceDir) ? readdirSync(voiceDir).filter((f) => /^countdown-(3|2|1|go)\.(m4a|mp3|wav|ogg|aac)$/i.test(f)) : [];
 
 export default defineConfig({
   // Relative base so the build works under any GitHub Pages subpath (e.g. /dirt-race/).
   base: './',
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    __COUNTDOWN_VOICE__: JSON.stringify(countdownVoice),
   },
   build: {
     target: 'es2020',
@@ -51,7 +57,7 @@ export default defineConfig({
       },
       workbox: {
         // Precache everything the build emits, including the Rapier WASM (inlined in JS by -compat) and future audio/textures.
-        globPatterns: ['**/*.{js,css,html,svg,png,webp,jpg,wasm,mp3,m4a,ogg,json,glb,bin,woff2}'],
+        globPatterns: ['**/*.{js,css,html,svg,png,webp,jpg,wasm,mp3,m4a,ogg,wav,aac,json,glb,bin,woff2}'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         cleanupOutdatedCaches: true,
         navigateFallback: 'index.html',
