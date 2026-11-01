@@ -305,7 +305,11 @@ export class UI {
       msg.innerHTML =
         'Tilt steering is switched off, so you can use the <b>◀ ▶ buttons</b> instead.<br>' +
         '<small>To use tilt: close the game, open it again and tap <b>Allow</b> when asked. ' +
-        'If it never asks: Settings → Safari → Advanced → Website Data, remove this site, and reopen.</small>';
+        (isStandalone()
+          ? 'If it never asks: delete the Dirt Race icon from the Home Screen, then add it again from Safari (Share → Add to Home Screen).'
+          : 'If it never asks: Settings → Safari → Advanced → Website Data, remove this site, and reopen. ' +
+            'Tilt only works on the https:// address.') +
+        '</small>';
     } else {
       msg.innerHTML = 'No tilt sensor here, so steer with the <b>◀ ▶ buttons</b> (or arrow keys on a keyboard).';
     }
