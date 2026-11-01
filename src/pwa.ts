@@ -5,7 +5,9 @@ import { registerSW } from 'virtual:pwa-register';
  *
  * Update policy: registerType 'prompt' so a new version never reloads the page mid-race.
  * When an update is waiting, `canUpdateNow()` is consulted (main passes "are we on the title
- * screen?"); if not now, we apply it the next time `applyPendingUpdate()` is called from the menu.
+ * screen?"); if not now, we apply it the next time `applyPendingUpdate()` is called from Menu
+ * (pause → Menu, results → Menu). Never from Race Again: the reload would drop the player on the
+ * title instead of the next spin. If Menu is never visited, the next cold launch picks it up.
  */
 let pending: ((reload?: boolean) => Promise<void>) | null = null;
 
@@ -27,7 +29,7 @@ export function registerPWA(canUpdateNow: () => boolean = () => false): void {
   }
 }
 
-/** Activate a waiting service worker and reload (only call from menus). */
+/** Activate a waiting service worker and reload (only call when going back to the title via Menu). */
 export function applyPendingUpdate(): void {
   if (!pending) return;
   const p = pending;

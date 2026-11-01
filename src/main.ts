@@ -88,8 +88,9 @@ async function boot(): Promise<void> {
       void flow?.newRace();
     },
     onRaceAgain: () => {
+      // Never apply a waiting app update here: it reloads the page and would dump Brooks on the title
+      // screen instead of the new spin. Updates apply from Menu (or on the next cold launch).
       ui.show(null);
-      applyPendingUpdate();
       void flow?.newRace();
     },
     onResume: () => togglePause(false),
