@@ -1,7 +1,7 @@
 {
   "name": "dirt-race",
   "version": "0.1.0",
-  "description": "",
+  "description": "Dirt Race: tilt-to-steer 3D racing game for iPad (Three.js + Rapier)",
   "scripts": {
     "dev": "vite --host",
     "build": "npm run icons && npm run typecheck && vite build",
@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "icons": "node scripts/gen-icons.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "physics-test": "tsx scripts/physics-test.ts"
+    "physics-test": "tsx scripts/physics-test.ts",
+    "test": "tsx scripts/tilt-test.ts && tsx scripts/physics-test.ts",
+    "tilt-test": "tsx scripts/tilt-test.ts"
   },
   "author": "",
   "license": "ISC",

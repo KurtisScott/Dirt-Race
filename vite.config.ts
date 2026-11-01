@@ -13,7 +13,19 @@ export default defineConfig({
   build: {
     target: 'es2020',
     assetsInlineLimit: 0,
-    chunkSizeWarningLimit: 4000,
+    // Rapier's -compat build inlines its WASM as base64 (~4.7 MB raw, ~1.8 MB gzip). Splitting vendors
+    // into their own chunks means a game-code update doesn't re-download physics/three.
+    chunkSizeWarningLimit: 5000,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: 'rapier', test: /node_modules[\\/]@dimforge/ },
+            { name: 'three', test: /node_modules[\\/]three/ },
+          ],
+        },
+      },
+    },
   },
   server: { host: true },
   plugins: [

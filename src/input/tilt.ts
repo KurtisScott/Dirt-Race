@@ -17,12 +17,12 @@ type DOEWithPermission = typeof DeviceOrientationEvent & {
 /**
  * Tilt steering from `deviceorientation`.
  *
- * We convert (beta, gamma) into the gravity vector in device coordinates, rotate it
- * into *screen* coordinates using the current orientation angle (works for both
- * landscape orientations, and portrait for testing), then take the component of
- * gravity along the screen's horizontal axis: asin(g_x) is the "wheel" angle.
- * This works whether the iPad is held upright like a wheel, flat on a lap, or
- * anywhere in between, and does not depend on alpha (compass).
+ * We convert (beta, gamma) into the gravity vector in device coordinates, rotate it into
+ * *screen* coordinates using the current orientation angle (handles both landscape orientations,
+ * and portrait for desktop testing), then take the angle of gravity within the screen plane:
+ * atan2(screen-right, screen-down) is exactly the "steering wheel" rotation and does not depend
+ * on how far the iPad is tipped back. When the iPad is nearly flat that angle is undefined/noisy,
+ * so we blend toward asin(screen-right) there. alpha (compass) is never used.
  */
 export class TiltSteering implements SteerSource {
   status: TiltStatus = 'unknown';
@@ -121,8 +121,13 @@ export class TiltSteering implements SteerSource {
     const dy = -Math.sin(b);
     // Screen-right axis expressed in device coordinates for the current orientation.
     const o = screenAngle() * DEG;
-    const sx = dx * Math.cos(o) - dy * Math.sin(o);
-    this.rawAngle = Math.asin(clamp(sx, -1, 1)) / DEG;
+    const sx = dx * Math.cos(o) - dy * Math.sin(o); // gravity along screen-right
+    const sy = -(dx * Math.sin(o) + dy * Math.cos(o)); // gravity along screen-down
+    const inPlane = Math.hypot(sx, sy);
+    const wheel = Math.atan2(sx, sy);
+    const flat = Math.asin(clamp(sx, -1, 1));
+    const w = clamp((inPlane - 0.2) / 0.25, 0, 1);
+    this.rawAngle = (w * wheel + (1 - w) * flat) / DEG;
   };
 }
 
