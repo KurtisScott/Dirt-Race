@@ -128,12 +128,38 @@ interface TrackPath {
   pointAt(s), tangentAt(s), halfWidthAt(s);
   project(pos, hintS?) → { s, lateral }   // lateral > 0 = right of travel; pass last s as hint
 }
-createWorld(ctx, level)             // 'test' today; add 'race'
+createWorld(ctx, level)             // 'race' (default: the real course) | 'test' (M1 test ground; ?level=test)
 SURFACES                            // grip/drag/rolling per surface, tune here
 PolylineTrack.fromControlPoints(ctrl, halfWidth, finishS, summitS)   // reusable TrackPath impl
 ```
 
 `TestGround` is a 140 × 220 m asphalt loop with speed bumps, a field of moguls, two ramps, a mud patch, a sand patch and 6 hay bales. It implements the full `World` interface, so race/AI/UI can be built against it before the real track exists.
+
+### The real course (`RaceCourse`)
+
+| File | What |
+| --- | --- |
+| `layout.ts` | **Tune the course here.** Turtle segments (length + turn) → centre-line; zones; road widths; `FINISH_BEFORE_HILL_M` (the single finish-placement value); hill length/angles |
+| `course.ts` | `CourseData`: pure data, no DOM/GL. Elevation profile, 2 m terrain height grid, 1 m surface grid, river/hill/shortcut geometry, checkpoints, spawns, and every prop/obstacle/animal placement. `CourseTrack` is the `TrackPath` |
+| `terrain.ts` | Rapier heightfield (same grid and triangle split as the mesh, so `heightAt` is exact) + chunked render mesh with an 8-layer texture-array splat shader |
+| `textures.ts` | Procedural textures from typed arrays (terrain layers, asphalt with lines, water normals, checker, pixel-font banners) |
+| `props.ts` | Low-poly vertex-coloured templates (trees, pines, bushes, rocks, tufts, houses, barn, fence, ramp, log bridge) + `ChunkMerger` (one mesh per 120–160 m chunk) |
+| `obstacles.ts` | Hay bales and cones (dynamic, sleeping, instanced), fixed boulders; emits `obstacle:hit` |
+| `animals.ts` | Deer, bear, mouse, ducks, croc: crossing schedule, light dynamic bodies, procedural models; emits `animal:crossing` / `animal:bump` |
+| `raceCourse.ts` | Assembles everything and implements `World` |
+
+All `s` values on the course are **horizontal** metres along the centre-line. `track.pointAt(s).y` is the real ground height. `tangentAt` is horizontal.
+
+**Optional members on `RaceCourse`** (not on `World`, so they are duck-typed; `TestGround` has none of them):
+* `shortcuts: TrackShortcut[]`: `[{ id: 'log-bridge', startS, endS, points, halfWidth, maxSpeed }]` (AIWorldExtras, taken by the Hard computer).
+* `animals: AnimalInfo[]`: `{ kind, position, velocity, radius, active }`. The AI should steer around entries with `active === true`. Animals are also `Group.ANIMAL` colliders, so the existing ray sensor sees them.
+* `data: CourseData` (debug/tests), `animalsEnabled` (setter), `plannedAnimals`.
+
+Event kinds: obstacles `'hay bale' | 'cone' | 'boulder'`; animals `'deer' | 'bear' | 'mouse' | 'duck' | 'croc'`.
+
+Collider tags: ramps `ground/asphalt`, bridge `ground/dirt`, potholes `static/'bump'` (the AI sensor ignores bumps), fences `static/'fence'`, houses `static/'wall'`, near-road tree trunks `static/'tree'`, boulders `static/'boulder'`.
+
+Tests: `npm run world-test` (headless: drives the course with all six vehicles, checks the hill, the shortcut and the zones). `node scripts/world-shots.mjs` (after a build) writes `screenshots/world-*.png` and prints draw calls per zone.
 
 ## race/
 

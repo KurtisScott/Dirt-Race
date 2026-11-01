@@ -19,6 +19,7 @@ const { events } = await import('../src/core/events');
 const { RaceCourse } = await import('../src/world/raceCourse');
 const { createVehicle } = await import('../src/vehicles/vehicle');
 const { VEHICLES } = await import('../src/vehicles/catalog');
+const { AIDriver, createPhysicsSensor } = await import('../src/ai');
 type VehicleKind = import('../src/core/types').VehicleKind;
 
 await initRapier();
@@ -300,6 +301,66 @@ if (!process.env.WORLD_KINDS || process.env.WORLD_SHORTCUT) {
   console.log('\n=== drive: steer off the road into the countryside ===');
   const w = drive('pickup', { wander: true, animals: false });
   check(w.stuckAt.length === 0 || true, 'wander run completed');
+}
+
+// -------------------------------------------------------------- the computer driver on this course
+if (!process.env.WORLD_KINDS || process.env.WORLD_AI) {
+  console.log('\n=== computer driver (src/ai) on the real course ===');
+  const aiRun = (kind: VehicleKind, d: 'easy' | 'normal' | 'hard') => {
+    const { physics, world } = makeWorld();
+    world.animalsEnabled = false;
+    const v = createVehicle({ physics, surfaces: world, spec: VEHICLES[kind], paint: 0, racer: 'cpu', spawn: world.spawns.cpu });
+    const ai = new AIDriver(v, world, d, 7);
+    ai.sensor = createPhysicsSensor(physics, 'cpu');
+    ai.enabled = true;
+    v.input = ai.input;
+    let resets = 0;
+    let lastCp = -1;
+    let s = 0;
+    ai.onRequestReset = () => {
+      resets++;
+      if (process.env.VERBOSE) console.log(`    reset requested at s=${s.toFixed(0)} (${world.zoneAt(s).id}) pos y=${v.position.y.toFixed(1)}`);
+      v.reset(lastCp >= 0 ? world.checkpoints[lastCp].respawn : world.spawns.cpu);
+    };
+    const sc = world.shortcuts[0];
+    let onShortcut = 0;
+    let finish: number | null = null;
+    let summit: number | null = null;
+    let best = 0;
+    for (let i = 0; i < 60 * 260; i++) {
+      const t = i * PHYSICS_DT;
+      ai.fixedUpdate(PHYSICS_DT);
+      world.fixedUpdate!(PHYSICS_DT);
+      v.fixedUpdate!(PHYSICS_DT);
+      physics.step();
+      v.postPhysics!(PHYSICS_DT);
+      v.update!(PHYSICS_DT, 1);
+      const pr = world.track.project(v.position, s);
+      s = pr.s;
+      while (lastCp + 1 < world.checkpoints.length && s >= world.checkpoints[lastCp + 1].s) lastCp++;
+      if (world.data.shortcutDist(v.position.x, v.position.z).d < 3 && world.data.fieldsAt(v.position.x, v.position.z).d > 30) onShortcut++; // on the bridge line, far from the ford road
+      if (finish === null && s >= world.track.finishS) finish = t;
+      if (finish !== null) best = Math.max(best, v.position.y - world.track.pointAt(world.data.hillStartS).y);
+      if (summit === null && v.position.distanceTo(world.summit) < 7) {
+        summit = t;
+        break;
+      }
+      if (finish !== null && t > finish + 45) break;
+    }
+    v.dispose();
+    world.dispose();
+    physics.dispose();
+    return { finish, summit, resets, shortcut: onShortcut > 30, best };
+  };
+  for (const [kind, d] of [['pickup', 'hard'], ['pickup', 'easy'], ['sedan', 'normal'], ['monster', 'normal']] as const) {
+    const r = aiRun(kind, d);
+    console.log(`  info ${kind}/${d}: finish ${r.finish?.toFixed(1) ?? '—'} s, summit ${r.summit !== null && r.finish !== null ? `+${(r.summit - r.finish).toFixed(1)} s` : `no (best ${r.best.toFixed(1)} m up)`}, resets ${r.resets}, log bridge ${r.shortcut ? 'yes' : 'no'}`);
+    check(r.finish !== null && r.resets <= 1, `computer ${kind} on ${d} completes the course (${r.resets} resets)`);
+    if (d === 'hard') check(r.shortcut, 'Hard computer takes the log bridge');
+    if (d === 'easy') check(!r.shortcut, 'Easy computer stays on the road (ford)');
+    if (kind === 'pickup' || kind === 'monster') check(r.summit !== null, `computer ${kind} climbs the bonus hill`);
+    if (kind === 'sedan') check(r.summit === null, 'computer sedan cannot climb the bonus hill');
+  }
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall world checks passed');

@@ -71,10 +71,10 @@ export function treeTemplate(variant: number): Template {
   const trunk = paint(new THREE.CylinderGeometry(0.16, 0.26, 3.2, 6).translate(0, 1.6, 0), 0x6b4a2f, 0.15, 2);
   const greens = [0x4f7f2e, 0x5d8a34, 0x467a35, 0x6b8f2c];
   const parts = [trunk];
-  const blobs = variant % 2 ? 3 : 2;
+  const blobs = 3;
   for (let b = 0; b < blobs; b++) {
     const r = 1.7 - b * 0.25;
-    const g = lumpy(new THREE.IcosahedronGeometry(r, 1), 0.35, variant * 10 + b);
+    const g = lumpy(new THREE.IcosahedronGeometry(r, 0), 0.3, variant * 10 + b);
     g.scale(1, 0.85, 1).translate((b - 0.8) * 0.7 * (variant % 2 ? 1 : 0.6), 3.4 + b * 0.9, (b % 2 ? 0.5 : -0.4));
     parts.push(paint(g, greens[(variant + b) % 4], 0.25, 3 + b));
   }
@@ -107,33 +107,36 @@ export function rockTemplate(variant: number, color = 0x8f877c): Template {
   return toTemplate([paint(g, color, 0.22, 9 + variant)], true);
 }
 
-/** Grass tuft: a few thin crossed blades (6 triangles). */
+/** Grass tuft: 4 thin crossed blades, both windings (single-sided material, no flipped dark backs). */
 export function tuftTemplate(variant: number): Template {
-  const parts: THREE.BufferGeometry[] = [];
-  const cols = [0x5e8f33, 0x6d9a3a, 0x7e9a40];
-  for (let b = 0; b < 3; b++) {
-    const a = (b / 3) * Math.PI + variant;
-    const h = 0.5 + hash2(b, variant, 11) * 0.35;
-    const w = 0.22;
-    const geo = new THREE.BufferGeometry();
-    const lean = 0.15;
-    const verts = new Float32Array([-w, 0, 0, w, 0, 0, lean, h, 0.05, -w, 0, 0, lean, h, 0.05, w, 0, 0]);
-    geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-    geo.rotateY(a);
+  const cols = [0x6f9e3c, 0x7fa845, 0x8ca64a];
+  const pos: number[] = [];
+  const col: number[] = [];
+  for (let b = 0; b < 4; b++) {
+    const a = (b / 4) * Math.PI + variant * 0.7;
+    const h = 0.32 + hash2(b, variant, 11) * 0.22;
+    const w = 0.09;
+    const ca = Math.cos(a);
+    const sa = Math.sin(a);
+    const lx = 0.08 * sa;
+    const lz = 0.08 * ca;
+    const v0 = [-w * ca, 0, w * sa];
+    const v1 = [w * ca, 0, -w * sa];
+    const v2 = [lx, h, lz];
     const c = new THREE.Color(cols[(b + variant) % 3]);
-    const base = c.clone().multiplyScalar(0.55);
-    const col = new Float32Array([base.r, base.g, base.b, base.r, base.g, base.b, c.r, c.g, c.b, base.r, base.g, base.b, c.r, c.g, c.b, base.r, base.g, base.b]);
-    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    parts.push(geo);
+    const base = c.clone().multiplyScalar(0.7);
+    for (const tri of [[v0, v1, v2], [v1, v0, v2]]) {
+      for (let k = 0; k < 3; k++) {
+        pos.push(...tri[k]);
+        const cc = k === 2 ? c : base;
+        col.push(cc.r, cc.g, cc.b);
+      }
+    }
   }
-  const t = toTemplate(parts, true);
-  // Upward normals so blades light like the ground (no dark backfaces).
-  for (let i = 0; i < t.nrm.length; i += 3) {
-    t.nrm[i] = 0;
-    t.nrm[i + 1] = 1;
-    t.nrm[i + 2] = 0;
-  }
-  return t;
+  const n = pos.length / 3;
+  const nrm = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) nrm[i * 3 + 1] = 1; // light like the ground
+  return { pos: new Float32Array(pos), nrm, col: new Float32Array(col), idx: new Uint32Array(Array.from({ length: n }, (_, i) => i)) };
 }
 
 const HOUSE_COLORS = [0xe8dcc0, 0xc9d7e0, 0xe6c49a, 0xd8e2c4];

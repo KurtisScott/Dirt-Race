@@ -50,8 +50,36 @@ export function createTerrainMesh(c: CourseData, textureSize: number): TerrainHa
       let minD = Infinity;
       for (let j = j0; j <= j1; j += 2) for (let i = i0; i <= i1; i += 2) minD = Math.min(minD, c.dist[i + j * c.NZ]);
       if (minD > WALL_END + 150) continue; // never visible (outside the valley, hidden by the walls & fog)
-      const step = minD < WALL_END + 10 ? 1 : FAR_STEP;
-      const geo = buildChunk(c, j0, i0, j1, i1, step, wts);
+      let geo: THREE.BufferGeometry;
+      if (minD >= WALL_END + 10) geo = buildChunk(c, j0, i0, j1, i1, FAR_STEP, wts);
+      else {
+        // Mixed chunk: full resolution (= exactly the physics surface) in 8×8-cell blocks near the
+        // road/river/hill; half resolution (with short skirts hiding T-junction cracks) elsewhere.
+        const parts: THREE.BufferGeometry[] = [];
+        const B = 8;
+        for (let bj = j0; bj < j1; bj += B) {
+          for (let bi = i0; bi < i1; bi += B) {
+            const ej = Math.min(j1, bj + B);
+            const ei = Math.min(i1, bi + B);
+            let near = Infinity;
+            let flatness = 0;
+            for (let j = bj; j <= ej; j += 2)
+              for (let i = bi; i <= ei; i += 2) {
+                const k = i + j * c.NZ;
+                near = Math.min(near, c.dist[k] - c.halfWidthAt(c.nearS[k]));
+                flatness = Math.max(flatness, Math.abs(c.heights[k] - c.heights[Math.min(c.heights.length - 1, k + 1)]));
+              }
+            const x = c.x0 + bj * CELL;
+            const z = c.z0 + bi * CELL;
+            const rc = c.riverCoords(x + B, z + B);
+            const river = Math.abs(rc.a) < 22 && rc.b > c.river.bMin - 20 && rc.b < c.river.bMax + 20;
+            const hill = c.hillU(x + B, z + B).h > 0.5 || c.hillU(x, z).h > 0.5;
+            const full = near < 14 || river || hill;
+            parts.push(buildChunk(c, bj, bi, ej, ei, full ? 1 : 2, wts, !full));
+          }
+        }
+        geo = mergeChunkParts(parts);
+      }
       const mesh = new THREE.Mesh(geo, material);
       mesh.receiveShadow = true;
       mesh.matrixAutoUpdate = false;
@@ -70,7 +98,7 @@ export function createTerrainMesh(c: CourseData, textureSize: number): TerrainHa
   };
 }
 
-function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: number, step: number, wts: Float32Array): THREE.BufferGeometry {
+function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: number, step: number, wts: Float32Array, forceSkirt = false, skirtDepth = 4): THREE.BufferGeometry {
   const cols: number[] = [];
   const rows: number[] = [];
   for (let j = j0; j < j1; j += step) cols.push(j);
@@ -79,7 +107,8 @@ function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: numbe
   rows.push(i1);
   const nC = cols.length;
   const nR = rows.length;
-  const skirt = step > 1;
+  const skirt = step > 1 || forceSkirt;
+  const sd = forceSkirt && step <= 2 ? 1.2 : skirtDepth;
   const nV = nC * nR + (skirt ? 2 * (nC + nR) : 0);
   const pos = new Float32Array(nV * 3);
   const nrm = new Float32Array(nV * 3);
@@ -130,7 +159,7 @@ function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: numbe
       for (const e of list) {
         const a = Math.floor(e / nR);
         const b = e % nR;
-        writeV(rows[b], cols[a], -4);
+        writeV(rows[b], cols[a], -sd);
       }
       for (let k = 0; k < list.length - 1; k++) idx.push(list[k], base + k, list[k + 1], list[k + 1], base + k, base + k + 1);
     };
@@ -160,6 +189,43 @@ function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: numbe
   geo.computeBoundingSphere();
   geo.computeBoundingBox();
   return geo;
+}
+
+function mergeChunkParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  let nv = 0;
+  let ni = 0;
+  for (const p of parts) {
+    nv += p.attributes.position.count;
+    ni += p.index!.count;
+  }
+  const pos = new Float32Array(nv * 3);
+  const nrm = new Float32Array(nv * 3);
+  const wA = new Uint8Array(nv * 4);
+  const wB = new Uint8Array(nv * 4);
+  const idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+  let ov = 0;
+  let oi = 0;
+  for (const p of parts) {
+    const n = p.attributes.position.count;
+    pos.set(p.attributes.position.array as Float32Array, ov * 3);
+    nrm.set(p.attributes.normal.array as Float32Array, ov * 3);
+    wA.set(p.attributes.wA.array as Uint8Array, ov * 4);
+    wB.set(p.attributes.wB.array as Uint8Array, ov * 4);
+    const src = p.index!.array;
+    for (let k = 0; k < src.length; k++) idx[oi + k] = src[k] + ov;
+    ov += n;
+    oi += src.length;
+    p.dispose();
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  g.setAttribute('wA', new THREE.BufferAttribute(wA, 4, true));
+  g.setAttribute('wB', new THREE.BufferAttribute(wB, 4, true));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  g.computeBoundingSphere();
+  g.computeBoundingBox();
+  return g;
 }
 
 /** Lambert material whose diffuse colour is a per-vertex blend of up to 8 texture-array layers. */

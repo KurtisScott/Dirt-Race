@@ -119,3 +119,50 @@ Decisions made without the family (they're on a flight). Each one is easy to rev
 - The Computer's reel shows a "?" mystery card until it spins. GO only appears once both reels have landed.
 - The integration point is `showVehicleSpin(root, picks)`, wired as `RaceFlowDeps.showSpin` in main.ts (race picks, reel reveals, GO resolves). The race keeps ownership of the picks, so headless race tests are unaffected. `runVehicleSpin()` is the standalone version. Events use the audio agent's names (`spin:tick`, `spin:land`), plus `spin:done`.
 - The env map is built defensively (null if there's no real 2D canvas), so vehicles build under the race test's DOM shims.
+
+## World M2 (the real course), 2026-11-01
+
+### Layout
+- **Point-to-point course, 2.49 km.** The centre-line is built by a "turtle" from (length, turn) segments in `world/layout.ts`, so corners are true circular arcs (radius ≥ 50 m in town, about 45–80 m elsewhere). Zones run town 0–370 m, farm –780, mud –1020, rocky –1480, desert –1910, river –2232, finish straight –2362, bonus hill –2486.
+- **Folded shape.** The desert is a long U-turn, so the course is about 460 × 1310 m instead of a 2 km noodle. This keeps the terrain grid small, and the bonus hill is visible from the farm road onward. No two legs come within 160 m of each other, so the valley walls never merge.
+- **All `s` values are horizontal metres** (the 37° hill would otherwise distort distances). `track.pointAt(s).y` is the exact ground height; `tangentAt` is horizontal.
+- **Finish placement:** `FINISH_BEFORE_HILL_M = 4` in `layout.ts` is the single value. Race's `finishAt: 'hillFoot' | 'summit'` still chooses between that line and the summit.
+- Course time: about 115 s for a pickup and 150 s for the sedan, driving the centre-line flat out with no shortcut. That leaves the 4-minute timer generous.
+
+### Terrain & physics
+- **One Rapier heightfield** (2 m grid, about 310 × 680 nodes) for everything: road, verges, mud pit, dunes, river channel, bonus hill and valley walls. The render mesh uses the same vertices and the same triangle diagonal near the road, so what you see is what you drive on, and `heightAt` is exact (not approximate).
+- **Keeping cars in the world:** about 48 m either side of the centre-line the ground rises into 24 m valley walls (rock textured), so there are no invisible walls. Off-road grass is rough (±0.2 m noise) and counts as **dirt** for grip/drag. Grass is not a `SurfaceType`, and adding one would ripple into vehicles/audio. The roughness and the vehicles' loose-surface speed caps are what slow you down.
+- **Fences** on the farm road and town have gaps every ~120 m, so a car outside can get back. Fence colliders are low-friction so they redirect rather than stop. Farm fences sit 4 m outside the road edge: at 2.4 m, the buggy got caught between a pothole and a fence.
+- **Potholes** can't be cut into a 2 m grid, so each is a pair of low half-buried capsules (an edge in, an edge out) tagged `static/'bump'`. The wheels drop and bounce, and the AI sensor ignores them.
+- Ramps are convex wedges (1.35 m lip, 9 m long) on the two rocky-hills straights. The log bridge is a cuboid deck plus two wedge ramps.
+- Tree trunks within 25 m of the road and the house walls have colliders. Everything farther out is scenery only (saves colliders: about 620 total).
+
+### Bonus hill
+- Profile: 6° at the foot, rising to 26° over the first 45 m, then 26°→37° held over the last ~25 m, a round-over and a 14 m plateau with the flag. 150 m long horizontally, 79 m high. Loose gravel everywhere on the mound. 
+- Tuned against the merged vehicles (`climbTraction`). With a run-up, pickup, monster, buggy, muscle and sports all summit in about 7 s. **The sedan stalls at about 47 m of 79** (about 38 m from a standing start). From a standing start at the finish line, every car except the sedan summits in 9–12 s, well within the 45 s bonus window. "Hard" here means steep, loud and scary rather than a coin-flip for the pickup. If playtesting wants it harder for the pickup too, raise `HILL_MAX_DEG` or `HILL_CLIMB_M` in `layout.ts`. The sports car is then the first to drop out.
+- The summit flag, pole and beacon use `fog: false`, so the gold flag reads from the start line even on Low.
+
+### River
+- The road makes an Ω-loop out to a 46 m-wide shallow ford (0.85 m deep at the crossing, 1.45 m elsewhere, so cars don't drive up the river). The log bridge cuts straight across the loop: 155 m instead of 270 m.
+- Water surface: one transparent Phong plane with a scrolling procedural normal map. Surface `water` comes from the surface grid wherever terrain is under the water line.
+- `world.shortcuts = [{ id: 'log-bridge', startS, endS, points, halfWidth: 1.6, maxSpeed: 11 }]`. The Hard computer takes it (verified); Easy/Normal take the ford.
+
+### Animals
+- 2–3 crossings per race, picked at random from zone-matched spots (mouse in town, deer/bear on farm and rocky, croc in the mud pit, a duck family of 4 at the river), at least 300 m apart and no repeated kinds.
+- They are staged on the verge when the leading car is 140 m away, and dash when it is about 2.4 s away, never closer than 22 m, so they're always avoidable. They're light **dynamic** capsules with rotations locked (mouse 6 kg … bear 160 kg) driven by velocity. A car shoves them aside with a small bump; they emit `animal:bump`, then flee at 1.35× speed and despawn. They're never hurt.
+- Wheel rays don't hit `ANIMAL`, so you can't drive up onto one. They are exposed as `world.animals` (`AnimalInfo`) and are ray-sensor visible.
+- Models: about 200–700 triangles each, merged per animal, with legs on hip pivots for a diagonal-gait walk/run cycle. Ducks waddle, and the croc's tail swishes. The mouse is cartoon-sized (60 cm) so a kid can actually see it.
+
+### Look & budget
+- **Terrain shader:** `MeshLambertMaterial` + `onBeforeCompile`. Eight procedural layers (grass, dirt, gravel, mud, sand, rock, river bed, dry field) live in one `DataArrayTexture` (256² on Low/Medium, 512² on High). Per-vertex weights are blended with noise at the edges, and a low-frequency macro-variation breaks up tiling. The shader skips layers with near-zero weight.
+- Town asphalt is its own ribbon mesh with a procedural texture (edge lines, dashed centre line, worn lanes). The other roads are terrain layers.
+- **Props:** procedural low-poly, vertex-coloured, merged per 120–160 m chunk (trees, pines, houses, barn+silo, boulders, fences, ramps, bridge in one layer; rocks; bushes; grass tufts). The tuft layer is hidden on Low; detail scales its density.
+- **Medium measured (headless Chrome, 1112×834):** 54–118 draw calls including the shadow pass (worst: the mud pit and the animal shot), 50k–175k triangles. Whole scene about 390k triangles, of which about 210k is terrain, culled per 80 m chunk. Terrain far from the road uses half/quarter resolution with skirts.
+- **Build time:** about 1.7–2.5 s on a desktop CPU (Node/Chrome). On an A12 expect about 4–6 s at load (behind the title screen). Biggest costs: fbm noise in the height/surface grids and texture generation. **Not measured on a real iPad.**
+- Shadows: only the sun casts them, and only on Medium/High (core renderer). Big props cast; rocks, bushes and tufts don't.
+
+### Tests
+- `npm run world-test`: course checks, then drives all six vehicles with a centre-line follower (zero stuck resets for all six), hill/sedan checks, standing-start hill climbs, the shortcut, and the real `src/ai` computer on the course (Hard takes the bridge, Easy doesn't, pickup and monster summit, sedan doesn't). It's not part of `npm test`, because it takes about 60 s.
+- `WORLD=race npx tsx scripts/race-test.ts` runs the race agent's full race suite on the real course (solo timers scaled ×3). Plain `npm test` still runs it on TestGround for speed.
+- `node scripts/world-shots.mjs` (after a build) writes `screenshots/world-*.png` and prints draw calls/triangles per zone.
+- `?level=test` in the URL loads the old test ground.

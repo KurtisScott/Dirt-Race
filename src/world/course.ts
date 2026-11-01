@@ -493,7 +493,7 @@ export class CourseData {
       }
     }
     // Steep slopes show rock (valley walls).
-    const steep = smoothstep(0.65, 0.95, slope) * (hill.h > 0.6 ? 0.3 : 1);
+    const steep = smoothstep(0.65, 0.95, slope) * (hill.h > 0.6 ? 0.3 : 1) * (1 - 0.75 * wDesert);
     if (steep > 0) {
       for (let k = 0; k < 8; k++) out[k] *= 1 - steep;
       out[5] += steep;

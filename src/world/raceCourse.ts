@@ -303,7 +303,7 @@ export class RaceCourse implements World {
       if (row > 0) {
         const a = (row - 1) * (across + 1);
         const b = row * (across + 1);
-        for (let k = 0; k < across; k++) idx.push(a + k, b + k, a + k + 1, a + k + 1, b + k, b + k + 1);
+        for (let k = 0; k < across; k++) idx.push(a + k, a + k + 1, b + k, a + k + 1, b + k + 1, b + k);
       }
     }
     const geo = new THREE.BufferGeometry();
@@ -374,7 +374,7 @@ export class RaceCourse implements World {
       bushes.add((desert ? dryT : bushT)[r.v % 4], r.x, r.y - 0.1, r.z, r.yaw, r.scale);
     }
     add(bushes.build(mat, false), 'bushes');
-    const tuftMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+    const tuftMat = new THREE.MeshLambertMaterial({ vertexColors: true });
     this.disposables.push(tuftMat);
     const tufts = new ChunkMerger(120);
     const tuftT = variants(3, tuftTemplate);
@@ -491,13 +491,13 @@ export class RaceCourse implements World {
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.2, 14, 8), poleMat);
     pole.position.y = 7;
     pole.castShadow = true;
-    const ballMat = new THREE.MeshBasicMaterial({ color: 0xffe066 });
-    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.55, 12, 8), ballMat);
+    const ballMat = new THREE.MeshBasicMaterial({ color: 0xffe066, fog: false }); // beacon: never fogged, so the summit reads from the start
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.9, 12, 8), ballMat);
     ball.position.y = 14.4;
     const fg = new THREE.PlaneGeometry(4.4, 2.6, 12, 4).translate(2.2, 0, 0);
     this.flagGeo = fg;
     this.flagBase = new Float32Array(fg.attributes.position.array);
-    const flagMat = new THREE.MeshLambertMaterial({ color: 0xffc51a, emissive: 0x6a4200, side: THREE.DoubleSide });
+    const flagMat = new THREE.MeshLambertMaterial({ color: 0xffc51a, emissive: 0x6a4200, side: THREE.DoubleSide, fog: false });
     const flag = new THREE.Mesh(fg, flagMat);
     flag.position.set(0.15, 12.4, 0);
     flag.castShadow = true;

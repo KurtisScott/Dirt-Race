@@ -120,7 +120,7 @@ const pos = () =>
     const p = window.__dirt.player;
     return {
       x: p.position.x,
-      y: p.position.y,
+      y: p.position.y - window.__dirt.world.heightAt(p.position.x, p.position.z),
       z: p.position.z,
       speed: p.speed,
     };
@@ -134,7 +134,7 @@ await page.keyboard.up('ArrowLeft');
 const p1 = await pos();
 const moved = Math.hypot(p1.x - p0.x, p1.z - p0.z);
 check(moved > 15, `car moved ${moved.toFixed(1)} m, speed ${(p1.speed * 3.6).toFixed(0)} km/h`);
-check(p1.y > 0.2 && p1.y < 3, `car on the ground (y=${p1.y.toFixed(2)})`);
+check(p1.y > 0.2 && p1.y < 3, `car on the ground (${p1.y.toFixed(2)} m above the terrain)`);
 await page.screenshot({
   path: join(shots, QUALITY === 'low' ? 'm1.png' : `m1-${QUALITY}.png`),
 });
@@ -267,6 +267,13 @@ await tp.goto(`http://localhost:${PORT}/dirt-race/`);
 await tp.waitForTimeout(1500);
 check(await tp.isVisible('#rotate'), 'portrait (touch) shows rotate overlay');
 await touch.close();
+
+// The real course is loaded with its zones, checkpoints, summit and the log-bridge shortcut.
+const worldInfo = await page.evaluate(() => {
+  const w = window.__dirt.world;
+  return { zones: w.zones.map((z) => z.id).join(','), cps: w.checkpoints.length, len: Math.round(w.track.length), shortcuts: (w.shortcuts ?? []).length };
+});
+check(worldInfo.zones.startsWith('town,farm,mud,rocky,desert,river') && worldInfo.cps >= 6 && worldInfo.shortcuts === 1, `race course loaded: ${worldInfo.len} m, zones ${worldInfo.zones}, ${worldInfo.cps} checkpoints`);
 
 const realErrors = errors.filter((e) => !/favicon/.test(e));
 check(realErrors.length === 0, `no console errors${realErrors.length ? ': ' + realErrors.join(' | ') : ''}`);

@@ -237,6 +237,7 @@ async function boot(): Promise<void> {
     renderer,
     ui,
     world,
+    camera,
     audio,
     events,
   };

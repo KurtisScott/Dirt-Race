@@ -30,6 +30,11 @@ g.document = {
 const { initRapier, PhysicsWorld, PHYSICS_DT } = await import('../src/core/physics');
 const { events } = await import('../src/core/events');
 const { TestGround } = await import('../src/world/testGround');
+const { RaceCourse } = await import('../src/world/raceCourse');
+/** WORLD=race runs the same races on the real course (default: the M1 test ground, fast). */
+const USE_RACE_COURSE = process.env.WORLD === 'race';
+/** Scale for the short solo timers (the test loop is ~560 m; the real course ~2.5 km). */
+const SOLO_T = USE_RACE_COURSE ? 3 : 1;
 const { RaceController, RaceFlow, session } = await import('../src/race');
 const { AIDriver, createPhysicsSensor } = await import('../src/ai');
 const { createVehicle } = await import('../src/vehicles/vehicle');
@@ -62,7 +67,7 @@ interface Opts {
 interface Harness {
   race: InstanceType<typeof RaceController>;
   flow: InstanceType<typeof RaceFlow>;
-  world: InstanceType<typeof TestGround>;
+  world: InstanceType<typeof TestGround> | InstanceType<typeof RaceCourse>;
 }
 
 function runRace(o: Opts) {
@@ -73,7 +78,7 @@ function runRace(o: Opts) {
     renderer: { scene },
     quality: { preset: { textureSize: 64, detail: 0.5 } },
   } as never;
-  const world = new TestGround(ctx);
+  const world = USE_RACE_COURSE ? new RaceCourse(ctx) : new TestGround(ctx);
   const race = new RaceController(world, o.timeLimitS ? { timeLimitS: o.timeLimitS } : {});
   const playerInput = {
     state: { steer: 0, throttle: 0, brake: 0 },
@@ -261,8 +266,8 @@ for (const d of ['easy', 'normal', 'hard'] as Difficulty[]) {
   const r = runRace({
     cpuDifficulty: d,
     player: 'idle',
-    timeLimitS: 100,
-    maxSimS: 120,
+    timeLimitS: 100 * SOLO_T,
+    maxSimS: 120 * SOLO_T,
   });
   const t = r.results?.racers[1].timeS;
   if (t) cpuTimes[d] = t;
@@ -285,8 +290,8 @@ for (const kind of ['sports', 'muscle', 'pickup', 'monster', 'buggy', 'sedan'] a
     cpuDifficulty: 'normal',
     player: 'idle',
     kinds: ['pickup', kind],
-    timeLimitS: 100,
-    maxSimS: 120,
+    timeLimitS: 100 * SOLO_T,
+    maxSimS: 120 * SOLO_T,
   });
   const cpu = r.results?.racers[1];
   const resets = r.log.filter((e) => e.type === 'race:resetting' && (e.payload as { racer: string }).racer === 'cpu').length;
@@ -365,8 +370,8 @@ console.log('\n=== reset: requestReset waits 2 s then returns to the last checkp
   runRace({
     cpuDifficulty: 'normal',
     player: 'ai',
-    timeLimitS: 30,
-    maxSimS: 30,
+    timeLimitS: 30 * (USE_RACE_COURSE ? 2 : 1),
+    maxSimS: 30 * (USE_RACE_COURSE ? 2 : 1),
     each: (t, h) => {
       tNow = t;
       if (requestedAt < 0 && h.race.progress.player.checkpoint >= 1) {
