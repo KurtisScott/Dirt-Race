@@ -15,6 +15,7 @@ import { AIDriver, createPhysicsSensor } from './ai';
 import { ChaseCamera, Effects } from './fx';
 import { AudioSystem, mountVolumeControls } from './audio';
 import { RaceHud, UI } from './ui';
+import { pickVehicles, showVehicleSpin } from './ui/spin';
 import { settings } from './core/settings';
 import { applyPendingUpdate, registerPWA } from './pwa';
 
@@ -82,29 +83,12 @@ async function boot(): Promise<void> {
       ai.rival = { gapM: gap };
       return ai;
     },
-    showSpin: (picks) =>
-      new Promise<void>((resolve) => {
-        ui.show('spin');
-        ui.spin.show(
-          {
-            player: {
-              name: picks.player.spec.name,
-              paint: picks.player.paint,
-              stats: { ...picks.player.spec.stats },
-            },
-            cpu: {
-              name: picks.cpu.spec.name,
-              paint: picks.cpu.paint,
-              stats: { ...picks.cpu.spec.stats },
-            },
-          },
-          () => {
-            ui.show(null);
-            setDriving(true);
-            resolve();
-          },
-        );
-      }),
+    spin: pickVehicles,
+    showSpin: async (picks) => {
+      ui.show(null);
+      await showVehicleSpin(uiRoot, picks);
+      setDriving(true);
+    },
     onVehicles: (now, old) => {
       for (const v of Object.values(old) as Vehicle[]) {
         audio.detachVehicle(v);

@@ -49,8 +49,9 @@ export function paramsFromSpec(spec: VehicleSpec): VehicleParams {
     suspensionRest,
     suspensionTravel,
     suspensionStiffness: stiffness,
-    suspensionCompression: crit * 0.55,
-    suspensionRelaxation: crit * 0.75,
+    // Buggy: under-damped on purpose (SPEC: light and bouncy).
+    suspensionCompression: crit * (spec.kind === 'buggy' ? 0.3 : 0.55),
+    suspensionRelaxation: crit * (spec.kind === 'buggy' ? 0.4 : 0.75),
     maxSuspensionForce: mass * 9.81 * 3,
     frictionSlip: lerp(1.35, 2.1, grip),
     // Lower side stiffness = more slide (muscle car). 1 is Rapier's default.
@@ -65,6 +66,9 @@ export function paramsFromSpec(spec: VehicleSpec): VehicleParams {
     drive: spec.drive,
     offroad: off,
     climbBoost: lerp(0.0, 1.6, climb),
+    // Traction limit on steep loose slopes, as a friction coefficient (hill needs ≈ 0.76 at 35°).
+    // Sedan (1) can't hold the steepest part; sports (2) barely; 3+ climbs; monster (5) easily.
+    climbTraction: lerp(0.6, 1.1, climb),
     antiRoll: spec.kind === 'sedan' ? 9 : spec.kind === 'buggy' ? 3 : 5,
     airControl: 0.6,
     linearDamping: 0.02,

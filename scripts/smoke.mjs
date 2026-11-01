@@ -97,10 +97,17 @@ const phase = () => page.evaluate(() => window.__dirt.race.phase);
 
 // Spin → countdown → GO
 await page.waitForSelector('[data-screen="spin"]:not([hidden])');
-check(true, 'spin screen shows both vehicles');
+check(true, 'vehicle spin reels showing');
+await page.waitForSelector('.vspin-go.ready', { timeout: 60000 });
+await page.waitForTimeout(1200);
 await page.screenshot({ path: join(shots, 'race-spin.png') });
-await page.click('[data-tap="go"]');
-check((await phase()) === 'countdown', "countdown after LET'S RACE");
+const reelKinds = await page.evaluate(() => [...document.querySelectorAll('.vspin-col.landed')].length);
+check(reelKinds === 2, 'both reels landed');
+await page.click('[data-tap="spin-go"]', { force: true });
+await page.waitForFunction(() => window.__dirt.race.phase === 'countdown', null, { timeout: 5000 }).catch(() => {});
+check((await phase()) === 'countdown', 'countdown after GO');
+const picked = await page.evaluate(() => [window.__dirt.flow?.picks?.player?.spec.kind, window.__dirt.player?.spec?.kind]);
+console.log(`  info spin picks: ${JSON.stringify(picked)}`);
 await page.waitForFunction(() => window.__dirt.race.countdownLeftS < 2.6, null, { timeout: 60000, polling: 50 });
 await page.screenshot({ path: join(shots, 'race-countdown.png') });
 await page.waitForFunction(() => window.__dirt.race.phase === 'racing', null, {
@@ -217,7 +224,8 @@ await page.screenshot({ path: join(shots, 'race-results.png') });
 await page.click('[data-tap="again"]');
 await page.waitForSelector('[data-screen="spin"]:not([hidden])');
 check(true, 'Race Again → new spin');
-await page.click('[data-tap="go"]');
+await page.waitForSelector('.vspin-go.ready', { timeout: 60000 });
+await page.click('[data-tap="spin-go"]', { force: true });
 await page.waitForFunction(() => window.__dirt.race.phase === 'racing', null, {
   timeout: 60000,
   polling: 100,

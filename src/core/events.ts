@@ -36,6 +36,10 @@ export interface GameEvents {
   'vehicle:flipped': { racer: RacerId };
   'vehicle:surface': { racer: RacerId; surface: SurfaceType };
 
+  // ---- vehicle spin screen (src/ui/spin also emits spin:tick / spin:land above) ----
+  /** GO tapped on the spin screen: both picks final. */
+  'spin:done': { player: { kind: VehicleKind; paint: number }; cpu: { kind: VehicleKind; paint: number } };
+
   // ---- world (emitted by src/world) ----
   'animal:crossing': { kind: string; x: number; z: number };
   'obstacle:hit': { kind: string; racer: RacerId; x: number; y: number; z: number };
