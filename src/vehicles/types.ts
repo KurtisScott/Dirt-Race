@@ -62,6 +62,11 @@ export interface VehicleParams {
   offroad: number;
   /** Multiplier on engine force when climbing (from hill-climb stat). */
   climbBoost: number;
+  /**
+   * Optional (added by vehicles M2): max tyre traction on steep (> 7°) non-asphalt slopes, as a
+   * friction coefficient: engine force is capped at mass·g·cos(slope)·climbTraction. Defaults to 0.85.
+   */
+  climbTraction?: number;
   /** Roll-stability assist strength (Nm per rad of excess roll). Sedan is very high. */
   antiRoll: number;
   /** Air control torque factor (small: lets the car level out in the air). */

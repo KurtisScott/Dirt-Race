@@ -33,6 +33,13 @@ const RR = 3;
 const REVERSE_THRESHOLD = 0.6;
 /** Natural slow-down when coasting (engine braking + rolling), m/s^2. */
 const COAST_DECEL = 1.6;
+/** Light aero drag coefficient: decel = AERO · v² (m/s², per kg-normalised). */
+const AERO = 0.0005;
+/**
+ * Fraction of top speed lost on each surface by a car with off-road stat 1 (scaled by 1 − offroad,
+ * so off-road 5 loses nothing). The sports car tops out ~45 km/h in mud; the monster truck is unaffected.
+ */
+const SURFACE_SPEED_PENALTY: Record<SurfaceType, number> = { asphalt: 0, dirt: 0.12, gravel: 0.18, mud: 0.7, sand: 0.5, water: 0.4 };
 
 // Scratch objects (no per-frame allocation).
 const _q = new THREE.Quaternion();
@@ -88,6 +95,10 @@ class RaycastVehicle implements Vehicle {
   private prevSusp = [0, 0, 0, 0];
   private currSusp = [0, 0, 0, 0];
   private chassisHeightOffset: number;
+  /** fadeTop / topSpeed, see engineForce. */
+  private topSpeedComp = 1;
+  /** Average raw SURFACES grip of grounded wheels (last step). */
+  private avgSurfaceGrip = 1;
 
   constructor(o: CreateVehicleOptions) {
     this.racer = o.racer;
@@ -97,6 +108,11 @@ class RaycastVehicle implements Vehicle {
     this.surfaces = o.surfaces;
     const p = (this.params = { ...paramsFromSpec(o.spec), ...o.paramOverrides });
     const world = o.physics.world;
+
+    // Solve a·(1 − (top/T)²) = AERO·top² + rolling + damping·top for T, so flat-asphalt top speed hits the target.
+    const a = p.engineForce / p.mass;
+    const resist = AERO * p.topSpeed ** 2 + SURFACES.asphalt.rolling + p.linearDamping * p.topSpeed;
+    this.topSpeedComp = 1 / Math.sqrt(Math.max(0.2, 1 - resist / a));
 
     // ---- chassis
     this.chassisHeightOffset = p.suspensionRest + p.wheelRadius - p.wheelY + 0.05;
@@ -198,8 +214,12 @@ class RaycastVehicle implements Vehicle {
     const fwdSpeed = _v.dot(_fwd);
     const absSpeed = Math.abs(fwdSpeed);
 
+    // Steep-climb blend 0..1 between 6° and 12° nose-up.
+    const slopeK = clamp((Math.asin(clamp(_fwd.y, -1, 1)) * 57.3 - 6) / 6, 0, 1);
+
     // ---- surface + grip per wheel (from last step's contacts)
     let gripSum = 0;
+    let surfGripSum = 0;
     let dragSum = 0;
     let rollSum = 0;
     let onGround = 0;
@@ -211,15 +231,20 @@ class RaycastVehicle implements Vehicle {
       // Off-road ability softens grip loss and drag on loose surfaces.
       const loose = surf === 'asphalt' ? 0 : 1;
       const grip = 1 - (1 - sp.grip) * (1 - 0.55 * p.offroad * loose);
-      ctrl.setWheelFrictionSlip(i, p.frictionSlip * grip);
+      // On steep slopes make sure the tyre limit sits above the hill-climb traction cap (see engineForce),
+      // so the stat decides climbing instead of Rapier wheelspin (which collapses traction entirely).
+      const slopeFs = slopeK > 0 ? slopeK * 2.2 * (p.climbTraction ?? 0.85) * (sp.grip / SURFACES.gravel.grip) : 0;
+      ctrl.setWheelFrictionSlip(i, Math.max(p.frictionSlip * grip, slopeFs));
       if (w.contact) {
         onGround++;
         gripSum += grip;
+        surfGripSum += sp.grip;
         dragSum += sp.drag * (1 - 0.7 * p.offroad * loose);
         rollSum += sp.rolling * (1 - 0.6 * p.offroad * loose);
         counts[surf] = (counts[surf] ?? 0) + 1;
       }
     }
+    if (onGround) this.avgSurfaceGrip = surfGripSum / onGround;
     if (onGround) {
       let best: SurfaceType = this.surface;
       let bestN = 0;
@@ -284,7 +309,7 @@ class RaycastVehicle implements Vehicle {
       body.applyImpulse({ x: -_fwd.x * Math.sign(fwdSpeed) * imp, y: 0, z: -_fwd.z * Math.sign(fwdSpeed) * imp }, true);
     }
     // Light aero drag everywhere.
-    const aero = 0.0005 * p.mass * fwdSpeed * absSpeed * dt;
+    const aero = AERO * p.mass * fwdSpeed * absSpeed * dt;
     body.applyImpulse({ x: -_fwd.x * aero, y: -_fwd.y * aero, z: -_fwd.z * aero }, true);
 
     // ---- stability assists
@@ -322,18 +347,33 @@ class RaycastVehicle implements Vehicle {
     ctrl.updateVehicle(dt, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, groups(Group.VEHICLE, Group.GROUND | Group.STATIC | Group.DEBRIS), (c) => c.parent()?.handle !== body.handle);
   }
 
-  /** Engine force (N) with top-speed fade and hill-climb boost. */
+  /** Engine force (N) with top-speed fade, surface speed cap, hill-climb boost and slope traction limit. */
   private engineForce(fwdSpeed: number, throttle: number): number {
     const p = this.params;
     const v = Math.max(0, fwdSpeed);
-    const top = p.topSpeed * (this.surface === 'asphalt' ? 1 : 1 - 0.25 * (1 - p.offroad));
-    const fade = clamp(1 - (v / top) ** 2, 0, 1);
+    // Loose/deep surfaces cap the speed of cars with poor off-road ability (sports car bogs in mud).
+    const top = p.topSpeed * (1 - SURFACE_SPEED_PENALTY[this.surface] * (1 - p.offroad));
+    // Fade towards `fadeTop` (> top) so that, after aero drag + asphalt rolling resistance, the
+    // equilibrium speed on flat asphalt lands on params.topSpeed (M1 was ~10% under).
+    const fade = clamp(1 - (v / (top * this.topSpeedComp)) ** 2, 0, 1);
     // Nose-up pitch → more torque for good climbers (SPEC: hill climb stat).
-    const climb = clamp(_fwd.y / 0.574, 0, 1.2); // sin(35°) ≈ 0.574
+    const slopeSin = clamp(_fwd.y, -1, 1);
+    const climb = clamp(slopeSin / 0.574, 0, 1.2); // sin(35°) ≈ 0.574
     const boost = 1 + p.climbBoost * climb;
     // Strong launch, tapering mid-range (feels punchy for a kid without being twitchy).
     const launch = 1 + 0.35 * clamp(1 - v / 8, 0, 1);
-    return p.engineForce * throttle * fade * boost * launch;
+    let f = p.engineForce * throttle * fade * boost * launch;
+    // Slope traction limit: on a steep climb the tyres can only push mass·g·cos·μ. μ comes from the
+    // hill-climb stat scaled by current surface grip (relative to gravel). Blended in from 6° to 12°.
+    const slopeDeg = Math.asin(slopeSin) * 57.3;
+    if (slopeDeg > 6) {
+      // Raw surface grip (no off-road bonus): climbing is the hill-climb stat's job, not off-road's.
+      const mu = (p.climbTraction ?? 0.85) * (this.avgSurfaceGrip / SURFACES.gravel.grip);
+      const cap = p.mass * 9.81 * Math.sqrt(1 - slopeSin * slopeSin) * mu * throttle;
+      const k = clamp((slopeDeg - 6) / 6, 0, 1);
+      f = Math.min(f, f + (cap - f) * k);
+    }
+    return f;
   }
 
   postPhysics(dt: number): void {
