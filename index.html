@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Dirt Race" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="theme-color" content="#2b6cb0" />
+    <meta name="description" content="Dirt Race: tilt-to-steer 3D racing for iPad" />
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <title>Dirt Race</title>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="hud"></div>
+    <div id="ui"></div>
+    <div id="rotate" aria-live="polite">
+      <div class="rotate-ipad"></div>
+      <p>Turn your iPad sideways to play</p>
+      <small>Tip: turn on Rotation Lock in Control Center so the screen doesn't flip while you steer.</small>
+    </div>
+    <div id="fatal" hidden></div>
+    <div id="loading">Loading…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
