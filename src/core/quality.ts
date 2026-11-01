@@ -29,8 +29,8 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     shadows: false,
     shadowMapSize: 512,
     shadowRange: 30,
-    viewDistance: 260,
-    fogNear: 70,
+    viewDistance: 240,
+    fogNear: 90,
     antialias: false,
     detail: 0.4,
     textureSize: 256,
@@ -42,7 +42,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     shadowMapSize: 1024,
     shadowRange: 35,
     viewDistance: 420,
-    fogNear: 120,
+    fogNear: 170,
     antialias: false,
     detail: 0.7,
     textureSize: 512,
@@ -54,7 +54,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     shadowMapSize: 2048,
     shadowRange: 45,
     viewDistance: 650,
-    fogNear: 180,
+    fogNear: 250,
     antialias: true,
     detail: 1,
     textureSize: 1024,
@@ -82,6 +82,15 @@ export class QualityManager {
 
   /** Average frame time above this for SLOW_WINDOWS consecutive 1 s windows triggers a downgrade. ~45 fps. */
   static readonly BUDGET_MS = 22;
+  /**
+   * Already on Low: above this (≈ 25 fps) for SLOW_WINDOWS windows emits 'quality:slow' once (the world
+   * then switches to its cheapest terrain shader). Higher than BUDGET_MS so a 30 fps cap (iOS Low Power
+   * Mode) does not trigger it.
+   */
+  static readonly LOW_FLOOR_MS = 40;
+  /** Number of automatic drops so far (debug/tests). */
+  autoDrops = 0;
+  private slowEmitted = false;
   static readonly SLOW_WINDOWS = 3;
   static readonly WARMUP_MS = 4000;
 
@@ -89,6 +98,7 @@ export class QualityManager {
     this.preset = QUALITY_PRESETS[settings.quality] ?? QUALITY_PRESETS.medium;
   }
 
+  /** Change level. `auto` = chosen by the frame-time monitor (persisted too, so the next launch starts there). */
   set(level: QualityLevel, auto = false): void {
     if (level === this.preset.level) return;
     this.preset = QUALITY_PRESETS[level];
@@ -123,14 +133,21 @@ export class QualityManager {
     this.windowSum = 0;
     this.windowCount = 0;
     this.windowStart = now;
-    this.slowWindows = avg > QualityManager.BUDGET_MS ? this.slowWindows + 1 : 0;
+    const i = ORDER.indexOf(this.preset.level);
+    const budget = i > 0 ? QualityManager.BUDGET_MS : QualityManager.LOW_FLOOR_MS;
+    this.slowWindows = avg > budget ? this.slowWindows + 1 : 0;
     if (this.slowWindows >= QualityManager.SLOW_WINDOWS) {
-      const i = ORDER.indexOf(this.preset.level);
       if (i > 0) {
         console.info(`[quality] avg frame ${avg.toFixed(1)} ms → dropping to ${ORDER[i - 1]}`);
+        this.autoDrops++;
         this.set(ORDER[i - 1], true);
       } else {
         this.slowWindows = 0;
+        if (!this.slowEmitted) {
+          this.slowEmitted = true;
+          console.info(`[quality] avg frame ${avg.toFixed(1)} ms on Low → asking for the cheapest terrain`);
+          events.emit('quality:slow', {});
+        }
       }
     }
   }

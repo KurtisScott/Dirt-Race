@@ -13,10 +13,22 @@ import { makeTerrainLayers, TERRAIN_LAYER_COUNT } from './textures';
 const CHUNK = 40; // cells per chunk side (80 m)
 const FAR_STEP = 4;
 
+/**
+ * How the terrain is shaded:
+ * - `full`: 8-layer texture-array splat + macro variation (Medium/High).
+ * - `lite`: same splat without the macro sample (Low: one texture fetch fewer per pixel).
+ * - `simple`: no textures at all, per-vertex blend of each layer's average colour. The safety net for GPUs
+ *   or browsers where the texture-array shader fails to compile or `sampler2DArray` is unsupported.
+ */
+export type TerrainShading = 'full' | 'lite' | 'simple';
+
 export interface TerrainHandles {
   mesh: THREE.Group;
-  material: THREE.MeshLambertMaterial;
-  layers: THREE.DataArrayTexture;
+  /** The material currently on the chunks. */
+  material: THREE.Material;
+  readonly shading: TerrainShading;
+  /** Swap every chunk to another shading mode (cheap: no geometry rebuild). */
+  setShading(mode: TerrainShading): void;
   dispose(): void;
 }
 
@@ -32,9 +44,24 @@ export function createTerrainCollider(physics: PhysicsWorld, c: CourseData): RAP
   return col;
 }
 
-export function createTerrainMesh(c: CourseData, textureSize: number): TerrainHandles {
-  const layers = makeTerrainLayers(textureSize);
-  const material = makeTerrainMaterial(layers);
+export function createTerrainMesh(c: CourseData, textureSize: number, shading: TerrainShading = 'full'): TerrainHandles {
+  // The layer texture is only built when a splat mode needs it (the simple mode works without it).
+  let layers: THREE.DataArrayTexture | null = null;
+  const materials = new Map<TerrainShading, THREE.Material>();
+  const getMaterial = (mode: TerrainShading): THREE.Material => {
+    let m = materials.get(mode);
+    if (!m) {
+      if (mode === 'simple') m = makeSimpleTerrainMaterial(textureSize);
+      else {
+        layers ??= makeTerrainLayers(textureSize);
+        m = makeTerrainMaterial(layers, mode === 'lite');
+      }
+      materials.set(mode, m);
+    }
+    return m;
+  };
+  let current = shading;
+  const material = getMaterial(shading);
   const group = new THREE.Group();
   group.name = 'terrain';
   const nxC = Math.ceil((c.NX - 1) / CHUNK);
@@ -86,16 +113,35 @@ export function createTerrainMesh(c: CourseData, textureSize: number): TerrainHa
       group.add(mesh);
     }
   }
-  return {
+  const handles: TerrainHandles = {
     mesh: group,
     material,
-    layers,
+    get shading() {
+      return current;
+    },
+    setShading(mode) {
+      if (mode === current) return;
+      current = mode;
+      const m = getMaterial(mode);
+      handles.material = m;
+      group.traverse((o) => {
+        if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).material = m;
+      });
+      // Free the texture array when it is no longer used (simple mode).
+      if (mode === 'simple') {
+        for (const [k, mm] of materials) if (k !== 'simple') (mm.dispose(), materials.delete(k));
+        layers?.dispose();
+        layers = null;
+      }
+    },
     dispose() {
-      layers.dispose();
-      material.dispose();
+      layers?.dispose();
+      for (const m of materials.values()) m.dispose();
+      materials.clear();
       group.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
     },
   };
+  return handles;
 }
 
 function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: number, step: number, wts: Float32Array, forceSkirt = false, skirtDepth = 4): THREE.BufferGeometry {
@@ -229,9 +275,9 @@ function mergeChunkParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
 }
 
 /** Lambert material whose diffuse colour is a per-vertex blend of up to 8 texture-array layers. */
-function makeTerrainMaterial(layers: THREE.DataArrayTexture): THREE.MeshLambertMaterial {
+function makeTerrainMaterial(layers: THREE.DataArrayTexture, lite: boolean): THREE.MeshLambertMaterial {
   const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-  mat.name = 'terrain';
+  mat.name = lite ? 'terrain-lite' : 'terrain';
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uLayers = { value: layers };
     sh.vertexShader = sh.vertexShader
@@ -271,13 +317,82 @@ function makeTerrainMaterial(layers: THREE.DataArrayTexture): THREE.MeshLambertM
           if (vWB.z > 0.01) { c += tl(6.0, uv) * vWB.z; wsum += vWB.z; }
           if (vWB.w > 0.01) { c += tl(7.0, uv) * vWB.w; wsum += vWB.w; }
           c /= max(wsum, 0.001);
-          // Large-scale brightness variation breaks up visible tiling.
+          ${
+            lite
+              ? '// Lite: cheap analytic variation instead of a 2nd texture fetch.\n          c *= 0.9 + 0.1 * sin(vXZ.x * 0.031) * sin(vXZ.y * 0.027 + 1.7);'
+              : `// Large-scale brightness variation breaks up visible tiling.
           float macro = texture(uLayers, vec3(vXZ * 0.013, 1.0)).r;
-          c *= 0.78 + macro * 0.5;
+          c *= 0.78 + macro * 0.5;`
+          }
           diffuseColor.rgb *= c;
         }`,
       );
   };
-  mat.customProgramCacheKey = () => 'dirt-race-terrain-v1';
+  mat.customProgramCacheKey = () => (lite ? 'dirt-race-terrain-lite-v1' : 'dirt-race-terrain-v1');
+  return mat;
+}
+
+/** Linear-space average colour of each terrain layer (computed once from a tiny render of the layers). */
+let layerAverages: THREE.Color[] | null = null;
+function terrainLayerAverages(): THREE.Color[] {
+  if (layerAverages) return layerAverages;
+  const S = 32;
+  const tex = makeTerrainLayers(S);
+  const data = tex.image.data as Uint8Array;
+  layerAverages = [];
+  for (let l = 0; l < TERRAIN_LAYER_COUNT; l++) {
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    const o = l * S * S * 4;
+    for (let i = 0; i < S * S; i++) {
+      r += data[o + i * 4];
+      g += data[o + i * 4 + 1];
+      b += data[o + i * 4 + 2];
+    }
+    const n = S * S * 255;
+    layerAverages.push(new THREE.Color().setRGB(r / n, g / n, b / n, THREE.SRGBColorSpace));
+  }
+  tex.dispose();
+  return layerAverages;
+}
+
+/**
+ * Fallback terrain: no textures, no sampler arrays, no texture() calls in the fragment shader — only a
+ * vertex-shader blend of the layers' average colours plus a little analytic variation. Works anywhere the
+ * plain Lambert material works.
+ */
+function makeSimpleTerrainMaterial(textureSize: number): THREE.MeshLambertMaterial {
+  void textureSize;
+  const avg = terrainLayerAverages();
+  const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  mat.name = 'terrain-simple';
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uPal = { value: avg };
+    sh.vertexShader = sh.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        attribute vec4 wA; attribute vec4 wB;
+        uniform vec3 uPal[8];
+        varying vec3 vTerr;`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        {
+          float ws = dot(wA, vec4(1.0)) + dot(wB, vec4(1.0));
+          vec3 c = uPal[0] * wA.x + uPal[1] * wA.y + uPal[2] * wA.z + uPal[3] * wA.w
+                 + uPal[4] * wB.x + uPal[5] * wB.y + uPal[6] * wB.z + uPal[7] * wB.w;
+          c /= max(ws, 0.001);
+          c *= 0.9 + 0.1 * sin(position.x * 0.71) * sin(position.z * 0.53 + 1.3) + 0.06 * sin(position.x * 0.05 + position.z * 0.04);
+          vTerr = c;
+        }`,
+      );
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>\n        varying vec3 vTerr;`)
+      .replace('#include <map_fragment>', `diffuseColor.rgb *= vTerr;`);
+  };
+  mat.customProgramCacheKey = () => 'dirt-race-terrain-simple-v1';
   return mat;
 }

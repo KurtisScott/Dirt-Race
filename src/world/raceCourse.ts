@@ -19,10 +19,23 @@ import {
   tuftTemplate,
   type Template,
 } from './props';
-import { createTerrainCollider, createTerrainMesh, type TerrainHandles } from './terrain';
+import { loadJSON, saveJSON } from '../core/storage';
+import { createTerrainCollider, createTerrainMesh, type TerrainHandles, type TerrainShading } from './terrain';
 import { makeAsphaltTexture, makeBannerTexture, makeCheckerTexture, makeWaterNormal } from './textures';
 import type { Checkpoint, World, Zone } from './types';
 import type { TrackShortcut } from '../ai/types';
+
+const GPU_KEY = 'dirtrace.gpu.v1';
+
+/** Forced/remembered texture-free terrain (URL ?terrain=simple, or a previous shader failure). */
+function terrainForcedSimple(): boolean {
+  try {
+    if (typeof location !== 'undefined' && new URLSearchParams(location.search).get('terrain') === 'simple') return true;
+  } catch {
+    /* headless */
+  }
+  return loadJSON<{ terrainSimple?: boolean }>(GPU_KEY, {}).terrainSimple === true;
+}
 
 /**
  * The real ~2.4 km point-to-point course (SPEC "Track"). Implements `World`.
@@ -58,9 +71,13 @@ export class RaceCourse implements World {
   private disposables: { dispose(): void }[] = [];
   private offQuality: () => void;
 
-  constructor(private ctx: GameContext) {
+  /** `data` may be pre-built (lets the loading screen show progress between the two halves of the build). */
+  constructor(
+    private ctx: GameContext,
+    data?: CourseData,
+  ) {
     const t0 = performance.now();
-    const c = (this.data = new CourseData());
+    const c = (this.data = data ?? new CourseData());
     this.track = c.track;
     this.zones = c.zones;
     this.checkpoints = c.checkpoints;
@@ -81,7 +98,7 @@ export class RaceCourse implements World {
     // ---- visuals
     const q = ctx.quality.preset;
     const texSize = q.textureSize >= 1024 ? 512 : 256;
-    this.terrain = createTerrainMesh(c, texSize);
+    this.terrain = createTerrainMesh(c, texSize, this.wantedShading());
     this.group.add(this.terrain.mesh, this.obstacles.group, this.animalSys.group);
     this.buildRoad();
     this.buildProps(q.detail);
@@ -89,7 +106,14 @@ export class RaceCourse implements World {
     this.buildStartFinish();
     this.buildSummitFlag();
     this.applyQuality();
-    this.offQuality = events.on('quality:changed', () => this.applyQuality());
+    const offs = [
+      events.on('quality:changed', () => this.applyQuality()),
+      // Still too slow on Low: drop the terrain to the texture-free shader for good.
+      events.on('quality:slow', () => {
+        if (this.terrain.shading !== 'simple') this.forceSimpleTerrain('slow on Low quality');
+      }),
+    ];
+    this.offQuality = () => offs.forEach((f) => f());
     console.info(`[world] race course built in ${(performance.now() - t0).toFixed(0)} ms`);
   }
 
@@ -115,6 +139,7 @@ export class RaceCourse implements World {
 
   update(dt: number): void {
     this.time += dt;
+    this.checkTerrainShader();
     this.obstacles.update(dt);
     this.animalSys.update(dt);
     if (this.waterNormal) {
@@ -145,13 +170,52 @@ export class RaceCourse implements World {
 
   // ------------------------------------------------------------------ quality
 
+  /** Current terrain shading mode ('full' | 'lite' | 'simple'), for tests and the debug readout. */
+  get terrainShading(): TerrainShading {
+    return this.terrain.shading;
+  }
+
+  /**
+   * Terrain shading for the current quality: Low → lite splat, otherwise full. The texture-free 'simple'
+   * shader is used when forced (?terrain=simple), when the splat shader failed before on this device
+   * (remembered), or when the GPU can't do texture arrays.
+   */
+  private wantedShading(): TerrainShading {
+    if (terrainForcedSimple()) return 'simple';
+    return this.ctx.quality.preset.level === 'low' ? 'lite' : 'full';
+  }
+
+  private shaderChecked = false;
+  /** After the first frame that drew the terrain, make sure its program compiled; else fall back. */
+  private checkTerrainShader(): void {
+    if (this.shaderChecked) return;
+    const r = this.ctx.renderer as Partial<GameContext['renderer']>;
+    if (typeof r.programReady !== 'function' || this.terrain.shading === 'simple') {
+      this.shaderChecked = true;
+      return;
+    }
+    const m = this.terrain.material;
+    if (!r.programReady(m)) return; // not drawn yet
+    this.shaderChecked = true;
+    if (r.programFailed!(m)) this.forceSimpleTerrain('terrain shader failed to compile');
+  }
+
+  private forceSimpleTerrain(why: string): void {
+    console.warn(`[world] terrain → simple shading (${why})`);
+    this.terrain.setShading('simple');
+    saveJSON(GPU_KEY, { terrainSimple: true });
+  }
+
   private applyQuality(): void {
     const q = this.ctx.quality.preset;
+    if (this.terrain.shading !== 'simple') this.terrain.setShading(this.wantedShading());
     // Decorative props: hide the tuft layer on Low; shadows from big props only with shadows on.
     this.group.traverse((o) => {
       const tag = o.userData.layer as string | undefined;
       if (tag === 'tufts') o.visible = q.detail >= 0.6;
       if (tag === 'bushes') o.visible = q.detail >= 0.5;
+      // Small scattered rocks are pure decoration (no colliders): skipped on Low (~10 draw calls).
+      if (tag === 'rocks') o.visible = q.detail >= 0.5;
     });
   }
 

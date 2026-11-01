@@ -76,14 +76,23 @@ const check = (ok, msg) => {
 };
 
 await page.goto(`http://localhost:${PORT}/dirt-race/`, { waitUntil: 'load' });
-await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 30000 });
-check(await page.isVisible('[data-screen="title"]'), 'title screen visible');
 await mkdir(shots, { recursive: true });
-await page.screenshot({ path: join(shots, 'm1-title.png') });
-
+// The title (logo + loading bar) shows while the course is still building, and Start already works:
+// it must request tilt permission synchronously in the tap; Ready waits for the course.
+await page.waitForSelector('[data-screen="title"]:not([hidden])', { timeout: 30000 });
+const early = await page.evaluate(() => !document.body.classList.contains('ready'));
+if (early) await page.screenshot({ path: join(shots, 'title-loading.png') });
+console.log(`  info title visible ${early ? 'before' : 'after'} the course finished building`);
 await page.click('[data-tap="start"]');
 await page.waitForSelector('[data-screen="calibrate"]:not([hidden])');
-check(true, 'calibrate screen after Start');
+check(true, 'calibrate screen after Start (tapped while loading)');
+if (early) {
+  const st = await page.evaluate(() => ({ disabled: document.querySelector('[data-tap="ready"]').disabled, ready: document.body.classList.contains('ready') }));
+  check(st.disabled || st.ready, 'Ready waits for the course to finish building');
+}
+await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 60000 });
+const loadInfo = await page.evaluate(() => ({ ms: performance.now() }));
+console.log(`  info course ready after ${(loadInfo.ms / 1000).toFixed(1)} s (software GL)`);
 // Wait for tilt detection to resolve (desktop → unavailable), then Ready.
 await page.waitForTimeout(1500);
 await page.click('[data-tap="ready"]');
@@ -221,16 +230,79 @@ check(
   `results: winner ${res?.winner} (${res?.reason}), Brooks ${res?.racers[0].distanceM} m, Computer ${res?.racers[1].distanceM} m`,
 );
 await page.screenshot({ path: join(shots, 'race-results.png') });
-await page.click('[data-tap="again"]');
-await page.waitForSelector('[data-screen="spin"]:not([hidden])');
-check(true, 'Race Again → new spin');
-await page.waitForSelector('.vspin-go.ready', { timeout: 60000 });
-await page.click('[data-tap="spin-go"]', { force: true });
-await page.waitForFunction(() => window.__dirt.race.phase === 'racing', null, {
-  timeout: 60000,
-  polling: 100,
+
+// Effects: fire the event-driven ones and check the pooled systems come alive (and stay ≤ 3 draw calls).
+const fxInfo = await page.evaluate(() => {
+  const d = window.__dirt;
+  const p = d.player.position;
+  d.events.emit('obstacle:hit', { kind: 'hay bale', racer: 'player', x: p.x, y: p.y, z: p.z });
+  d.events.emit('vehicle:landed', { racer: 'player', impact: 8 });
+  d.events.emit('race:finish', { racer: 'player', timeS: 100, winner: true });
+  d.events.emit('race:summit', { racer: 'player' });
+  d.fx.update(1 / 60);
+  return { particles: d.fx.particles.count, debris: d.fx.debris.count };
 });
-check(true, 'second race starts');
+check(fxInfo.particles > 10 && fxInfo.debris > 20, `effects: hay/landing/confetti/summit spawn pooled particles (${fxInfo.particles} sprites, ${fxInfo.debris} pieces)`);
+
+// Race Again ×5: GPU memory (geometries/textures), programs and physics bodies must stay flat.
+const mem = () =>
+  page.evaluate(() => {
+    const d = window.__dirt;
+    const i = d.renderer.renderer.info;
+    return { geo: i.memory.geometries, tex: i.memory.textures, prog: i.programs?.length ?? 0, bodies: d.physics.world.bodies.len(), colliders: d.physics.world.colliders.len(), scene: d.renderer.scene.children.length };
+  });
+const mems = [];
+for (let round = 1; round <= 5; round++) {
+  if (round > 1) {
+    await page.evaluate(() => {
+      const r = window.__dirt.race;
+      r.config.timeLimitS = r.elapsedS + 0.5;
+    });
+    await page.waitForSelector('[data-screen="results"]:not([hidden])', { timeout: 120000 });
+  }
+  await page.click('[data-tap="again"]');
+  await page.waitForSelector('[data-screen="spin"]:not([hidden])');
+  await page.waitForSelector('.vspin-go.ready', { timeout: 60000 });
+  await page.click('[data-tap="spin-go"]', { force: true });
+  await page.waitForFunction(() => window.__dirt.race.phase === 'racing', null, { timeout: 60000, polling: 100 });
+  await page.keyboard.down('ArrowUp');
+  await simWait(1.5);
+  await page.keyboard.up('ArrowUp');
+  mems.push(await mem());
+}
+check(true, 'Race Again → new spin → race, 5 times');
+console.log(`  info memory per race: ${mems.map((m) => `geo ${m.geo} tex ${m.tex} prog ${m.prog} bodies ${m.bodies} scene ${m.scene}`).join(' | ')}`);
+// Different vehicle kinds have different geometry counts, so allow a little wobble but no growth trend.
+const first = mems[0];
+const last = mems[mems.length - 1];
+const flat = (k, slack) => Math.max(...mems.map((m) => m[k])) - Math.min(...mems.map((m) => m[k])) <= slack;
+check(flat('tex', 2) && flat('bodies', 0) && flat('colliders', 0) && flat('scene', 0) && last.geo - first.geo <= 12 && flat('geo', 24), 'no leak over 5 Race Agains (textures, geometries, bodies, scene objects flat)');
+
+// Quality auto-drop: slow frames while driving drop a level and persist it. Start from Medium with Auto
+// on (via the settings screen, like a parent would), then feed the monitor 40 ms frames.
+await page.keyboard.press('KeyP');
+await page.click('[data-seg="quality"] [data-v="medium"]');
+await page.click('[data-seg="quality"] [data-v="auto"]');
+await page.click('[data-tap="resume"]');
+const dropped = await page.evaluate(() => {
+  const q = window.__dirt.quality;
+  q.setMonitoring(true);
+  if (q.preset.level !== 'medium') return { level: 'not medium: ' + q.preset.level, stored: '', drops: 0 };
+  let t = performance.now() + 5000;
+  for (let i = 0; i < 200; i++) q.sample(40, (t += 40));
+  return { level: q.preset.level, stored: JSON.parse(localStorage.getItem('dirtrace.settings.v1')).quality, drops: q.autoDrops };
+});
+check(dropped.level === 'low' && dropped.stored === 'low' && dropped.drops >= 1, `slow frames auto-drop quality and persist it (medium → ${dropped.level}, saved ${dropped.stored})`);
+const terr = await page.evaluate(() => {
+  const d = window.__dirt;
+  const q = d.quality;
+  let t = performance.now() + 5000;
+  for (let i = 0; i < 200; i++) q.sample(60, (t += 60));
+  return d.world.terrainShading;
+});
+check(terr === 'simple', `still slow on Low → texture-free terrain (${terr})`);
+await page.waitForTimeout(500);
+await page.screenshot({ path: join(shots, 'terrain-simple.png') });
 
 // Service worker registered + manifest present
 const sw = await page.evaluate(async () => {
@@ -274,6 +346,35 @@ const worldInfo = await page.evaluate(() => {
   return { zones: w.zones.map((z) => z.id).join(','), cps: w.checkpoints.length, len: Math.round(w.track.length), shortcuts: (w.shortcuts ?? []).length };
 });
 check(worldInfo.zones.startsWith('town,farm,mud,rocky,desert,river') && worldInfo.cps >= 6 && worldInfo.shortcuts === 1, `race course loaded: ${worldInfo.len} m, zones ${worldInfo.zones}, ${worldInfo.cps} checkpoints`);
+
+// Forced fallback terrain (?terrain=simple) boots and renders without errors, never a black/pink world.
+{
+  const fb = await browser.newPage({ viewport: { width: 1112, height: 834 }, deviceScaleFactor: 1 });
+  await fb.addInitScript(() => {
+    try {
+      localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: 'low', autoQuality: false, seenRotationTip: true }));
+    } catch {}
+  });
+  const fbErr = [];
+  fb.on('pageerror', (e) => fbErr.push(String(e)));
+  await fb.goto(`http://localhost:${PORT}/dirt-race/?terrain=simple`, { waitUntil: 'load' });
+  await fb.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 60000 });
+  await fb.waitForTimeout(800);
+  const px = await fb.evaluate(() => {
+    const d = window.__dirt;
+    d.renderer.render();
+    const gl = d.renderer.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const buf = new Uint8Array(4);
+    gl.readPixels(Math.floor(w / 2), Math.floor(h * 0.15), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    return { shading: d.world.terrainShading, ground: [...buf], errors: d.renderer.shaderErrors };
+  });
+  const [r, g, b] = px.ground;
+  const sane = r + g + b > 60 && !(r > 200 && b > 200 && g < 80);
+  check(px.shading === 'simple' && px.errors === 0 && fbErr.length === 0 && sane, `?terrain=simple fallback renders (shading ${px.shading}, ground pixel rgb(${r},${g},${b}))`);
+  await fb.close();
+}
 
 const realErrors = errors.filter((e) => !/favicon/.test(e));
 check(realErrors.length === 0, `no console errors${realErrors.length ? ': ' + realErrors.join(' | ') : ''}`);

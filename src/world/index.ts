@@ -6,6 +6,7 @@ export { RaceCourse } from './raceCourse';
 export type { AnimalInfo } from './animals';
 
 import type { GameContext } from '../core/context';
+import { CourseData } from './course';
 import { RaceCourse } from './raceCourse';
 import { TestGround } from './testGround';
 import type { World } from './types';
@@ -19,4 +20,32 @@ export function createWorld(ctx: GameContext, level: 'race' | 'test' = 'race'): 
     default:
       return new RaceCourse(ctx);
   }
+}
+
+/** Let the browser paint (loading bar) between heavy synchronous steps. */
+function breathe(): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const go = (): void => {
+      if (done) return;
+      done = true;
+      setTimeout(resolve, 0);
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(go);
+    setTimeout(go, 50); // hidden tab / headless: rAF may not fire
+  });
+}
+
+/**
+ * Same as `createWorld`, but builds the race course in two halves (course data, then meshes/colliders)
+ * and yields in between, reporting progress 0..1 so the loading bar moves.
+ */
+export async function createWorldAsync(ctx: GameContext, level: 'race' | 'test', progress?: (f: number, label: string) => void): Promise<World> {
+  if (level === 'test') return new TestGround(ctx);
+  progress?.(0, 'Shaping the hills…');
+  await breathe();
+  const data = new CourseData();
+  progress?.(0.55, 'Planting trees and stacking hay…');
+  await breathe();
+  return new RaceCourse(ctx, data);
 }

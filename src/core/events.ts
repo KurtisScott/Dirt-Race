@@ -48,6 +48,8 @@ export interface GameEvents {
 
   // ---- settings / system ----
   'quality:changed': { level: QualityLevel; auto: boolean };
+  /** Frames are still slow at the lowest quality level (world drops to its cheapest terrain shader). */
+  'quality:slow': Record<string, never>;
   'settings:changed': Record<string, never>;
   'tilt:status': { status: TiltStatus };
   'app:paused': { paused: boolean };

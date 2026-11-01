@@ -205,60 +205,6 @@ export class RaceHud implements System {
   }
 }
 
-/**
- * Temporary vehicle reveal shown during the 'spin' phase until the Vehicles engineer's slot-machine
- * spin screen is merged. Shows both picks and a big "LET'S RACE!" button.
- */
-export class SpinCard {
-  readonly screen: Screen;
-  private onGo: (() => void) | null = null;
-  constructor(root: HTMLElement) {
-    this.screen = new Screen(
-      root,
-      `<div class="spin-card">
-         <h2>Your rides!</h2>
-         <div class="row spin-row">
-           <div class="spin-car" data-r="player"></div>
-           <div class="spin-vs">VS</div>
-           <div class="spin-car" data-r="cpu"></div>
-         </div>
-         <button class="big-btn" data-tap="go">LET'S RACE!</button>
-       </div>`,
-      'spin',
-    );
-    onTap(this.screen.q('[data-tap="go"]'), () => {
-      const fn = this.onGo;
-      this.onGo = null;
-      fn?.();
-    });
-  }
-
-  show(picks: Record<RacerId, { name: string; paint: number; stats: Record<string, number> }>, onGo: () => void): void {
-    for (const r of ['player', 'cpu'] as RacerId[]) {
-      const p = picks[r];
-      const bars = (
-        [
-          ['Speed', 'topSpeed'],
-          ['Accel', 'accel'],
-          ['Grip', 'grip'],
-          ['Off-road', 'offroad'],
-          ['Hill', 'hillClimb'],
-        ] as const
-      )
-        .map(([label, k]) => `<div class="stat"><span>${label}</span><i style="--v:${(p.stats[k] ?? 0) / 5}"></i></div>`)
-        .join('');
-      this.screen.q(`[data-r="${r}"]`).innerHTML =
-        `<div class="who">${RACER_NAME[r]}</div><div class="swatch" style="background:${hex(p.paint)}"></div><div class="car-name">${p.name}</div>${bars}`;
-    }
-    this.onGo = onGo;
-    this.screen.show();
-  }
-
-  hide(): void {
-    this.screen.hide();
-  }
-}
-
 /** Results screen (SPEC step 8): winner, distances, bonus points, session score, Race Again / Menu. */
 export class ResultsScreen {
   readonly screen: Screen;
@@ -266,6 +212,8 @@ export class ResultsScreen {
     this.screen = new Screen(
       root,
       `<div class="results-screen">
+         <div class="res-confetti" data-r="confetti" aria-hidden="true"></div>
+         <div class="res-trophy" data-r="trophy" aria-hidden="true"></div>
          <h1 class="results-title" data-r="title">YOU WIN!</h1>
          <p class="results-sub" data-r="sub"></p>
          <div class="row results-row" data-r="cards"></div>
@@ -314,10 +262,38 @@ export class ResultsScreen {
       })
       .join('');
     s.q('[data-r="session"]').innerHTML = `<span>Brooks</span><b>${res.session.player}</b><em>–</em><b>${res.session.cpu}</b><span>Computer</span>`;
+    // Celebration: CSS confetti rain + bouncing trophy when Brooks wins; a smaller star shower for a
+    // summit bonus; an encouraging line otherwise. Pure CSS animations (compositor only), removed on hide.
+    const me = res.racers.find((r) => r.racer === 'player');
+    const won = res.winner === 'player';
+    const party = won || !!me?.bonus;
+    const conf = s.q('[data-r="confetti"]');
+    conf.innerHTML = party ? confettiHtml(won ? 46 : 22, won ? CONFETTI_COLORS : ['#ffd34d', '#ffe680', '#fff2b0']) : '';
+    s.q('[data-r="trophy"]').textContent = won ? '🏆' : me?.bonus ? '⭐' : '';
+    s.el.classList.toggle('celebrate', party);
+    if (!won && res.winner === 'cpu') s.q('[data-r="sub"]').textContent += me?.bonus ? ' But you got the summit bonus!' : ' So close! Race again?';
     s.show();
   }
 
   hide(): void {
     this.screen.hide();
+    this.screen.q('[data-r="confetti"]').innerHTML = '';
   }
+}
+
+const CONFETTI_COLORS = ['#ff4d4d', '#ffd23f', '#3fb6ff', '#6ee06e', '#ff8ad8', '#ffffff', '#ff9a3d'];
+
+/** Absolutely positioned confetti pieces with randomised CSS variables (animation lives in style.css). */
+function confettiHtml(n: number, colors: string[]): string {
+  let out = '';
+  for (let i = 0; i < n; i++) {
+    const x = (Math.random() * 100).toFixed(1);
+    const d = (2.4 + Math.random() * 2.2).toFixed(2);
+    const delay = (Math.random() * 1.6).toFixed(2);
+    const rot = Math.round(Math.random() * 720 - 360);
+    const drift = Math.round(Math.random() * 80 - 40);
+    const c = colors[i % colors.length];
+    out += `<i style="--x:${x}%;--d:${d}s;--delay:${delay}s;--r:${rot}deg;--dx:${drift}px;--c:${c}"></i>`;
+  }
+  return out;
 }
