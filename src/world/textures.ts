@@ -260,27 +260,94 @@ const GLYPHS: Record<string, number[]> = {
 };
 
 /**
- * Render a short text banner into a texture. Pixel-font letters on a coloured board
- * (optionally with a checker border), scaled `px` texels per font pixel.
+ * Sign/banner texture with `text` centred on `bg`, drawn at the aspect of the plane it goes on
+ * (`aspect` = plane width / height) so letters aren't stretched. Uses a 2D canvas with a heavy rounded
+ * font when one exists (crisp at any distance thanks to mipmaps + anisotropy); headless tests without a
+ * canvas get the 5×7 pixel font, drawn at an integer scale (no resampling, so still sharp-edged).
  */
-export function makeBannerTexture(text: string, fg: RGB, bg: RGB, checker = false, px = 6): THREE.DataTexture {
+export function makeBannerTexture(text: string, fg: RGB, bg: RGB, checker = false, px = 6, aspect?: number): THREE.Texture {
+  return canvasBanner(text, fg, bg, checker, aspect) ?? pixelBanner(text, fg, bg, checker, px, aspect);
+}
+
+const rgb = (c: RGB): string => `rgb(${c[0]},${c[1]},${c[2]})`;
+
+function canvasBanner(text: string, fg: RGB, bg: RGB, checker: boolean, aspect?: number): THREE.Texture | null {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') return null;
+  const H = 128;
+  const W = Math.min(2048, Math.max(H, Math.round(H * (aspect ?? text.length * 0.9 + 0.6))));
+  let c: HTMLCanvasElement;
+  let g: CanvasRenderingContext2D | null = null;
+  try {
+    c = Object.assign(document.createElement('canvas'), { width: W, height: H });
+    g = c.getContext('2d');
+  } catch {
+    return null;
+  }
+  // Test shims hand out stub contexts: only use a real one.
+  const probe = g && typeof g.measureText === 'function' ? g.measureText('M') : null;
+  if (!g || !probe || typeof probe.width !== 'number' || typeof g.fillText !== 'function') return null;
+  g.fillStyle = rgb(bg);
+  g.fillRect(0, 0, W, H);
+  const strip = checker ? 16 : 0;
+  if (checker) {
+    for (let x = 0; x < W; x += strip) {
+      for (const [y, o] of [[0, 0], [H - strip, 1]] as const) {
+        g.fillStyle = (x / strip + o) % 2 ? '#f5f5f5' : '#141414';
+        g.fillRect(x, y, strip, strip);
+      }
+    }
+  }
+  const avail = H - strip * 2;
+  let size = Math.round(avail * 0.9);
+  const font = (sz: number): string => `900 ${sz}px ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", "Helvetica Neue", Arial, sans-serif`;
+  g.font = font(size);
+  const maxW = W * 0.9;
+  let tw = g.measureText(text).width;
+  if (tw > maxW) {
+    size = Math.floor((size * maxW) / tw);
+    g.font = font(size);
+    tw = g.measureText(text).width;
+  }
+  // Wide boards (the gantries): stretch the letters sideways (up to 1.8×) so the word fills about 60%
+  // of the board and reads from far away, like a painted race banner.
+  const sx = Math.min(1.8, Math.max(1, (W * 0.6) / Math.max(1, tw)));
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.lineJoin = 'round';
+  g.lineWidth = Math.max(2, size * 0.1);
+  g.strokeStyle = 'rgba(0,0,0,0.35)';
+  g.setTransform(sx, 0, 0, 1, W / 2, H / 2 + size * 0.04);
+  g.strokeText(text, 0, 0);
+  g.fillStyle = rgb(fg);
+  g.fillText(text, 0, 0);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.generateMipmaps = true;
+  t.anisotropy = 8; // clamped to the GPU's max by three
+  return t;
+}
+
+function pixelBanner(text: string, fg: RGB, bg: RGB, checker: boolean, px: number, aspect?: number): THREE.DataTexture {
   const chars = text.toUpperCase().split('');
   const cw = 6 * px;
   const pad = checker ? 4 * px : 2 * px;
-  const w = chars.length * cw - px + pad * 2;
+  const tw = chars.length * cw - px;
   const h = 7 * px + pad * 2;
-  const W = THREE.MathUtils.ceilPowerOfTwo(w);
-  const H = THREE.MathUtils.ceilPowerOfTwo(h);
-  const t = dataTex(0, W, H, (x, yy, o) => {
+  // Integer texel grid at the plane's aspect: the text is centred and the sides are board colour.
+  const w = Math.max(tw + pad * 2, Math.round(h * (aspect ?? 0)));
+  const x0 = Math.floor((w - tw) / 2);
+  const t = dataTex(0, w, h, (x, yy, o) => {
     // DataTexture row 0 is the bottom; flip so text reads upright.
-    const y = H - 1 - yy;
-    const sx = (x / W) * w;
-    const sy = (y / H) * h;
+    const y = h - 1 - yy;
     let c: RGB = bg;
-    if (checker && (sy < 2 * px || sy >= h - 2 * px)) c = (Math.floor(sx / (2 * px)) + Math.floor(sy / (2 * px))) % 2 ? [245, 245, 245] : [20, 20, 20];
-    const gx = Math.floor((sx - pad) / px);
-    const gy = Math.floor((sy - pad) / px);
-    if (gx >= 0 && gy >= 0 && gy < 7) {
+    if (checker && (y < 2 * px || y >= h - 2 * px)) c = (Math.floor(x / (2 * px)) + Math.floor(y / (2 * px))) % 2 ? [245, 245, 245] : [20, 20, 20];
+    const gx = Math.floor((x - x0) / px);
+    const gy = Math.floor((y - pad) / px);
+    if (x >= x0 && gx >= 0 && gy >= 0 && gy < 7) {
       const ci = Math.floor(gx / 6);
       const col = gx % 6;
       const g = GLYPHS[chars[ci] ?? ' '];

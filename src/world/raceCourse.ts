@@ -509,7 +509,8 @@ export class RaceCourse implements World {
       line.receiveShadow = true;
       this.group.add(line);
       // Two posts + banner.
-      const banner = makeBannerTexture(text, fg, bg, true, 6);
+      const bh = 1.4;
+      const banner = makeBannerTexture(text, fg, bg, true, 6, (hw * 2) / bh);
       this.disposables.push(banner);
       const parts: THREE.Mesh[] = [];
       const postMat = new THREE.MeshLambertMaterial({ color: 0xdedede });
@@ -525,14 +526,9 @@ export class RaceCourse implements World {
         post.castShadow = true;
         parts.push(post);
       }
-      const img = banner.image as { width: number; height: number };
-      const bh = 1.4;
-      const bw = Math.min(hw * 2, (bh * img.width) / img.height);
       const bannerMat = new THREE.MeshLambertMaterial({ map: banner, side: THREE.DoubleSide });
       this.disposables.push(bannerMat);
       const bm = new THREE.Mesh(new THREE.PlaneGeometry(hw * 2, bh), bannerMat);
-      // Stretch the texture horizontally only as far as the text needs; fill sides with board colour.
-      void bw;
       bm.position.set(0, H, 0);
       bm.castShadow = true;
       parts.push(bm);
@@ -567,7 +563,7 @@ export class RaceCourse implements World {
     flag.castShadow = true;
     this.flag = flag;
     // A small "+1" sign at the base.
-    const signTex = makeBannerTexture('+1 BONUS', [255, 255, 255], [40, 120, 200], false, 5);
+    const signTex = makeBannerTexture('+1 BONUS', [255, 255, 255], [40, 120, 200], false, 5, 3.6 / 0.9);
     const signMat = new THREE.MeshLambertMaterial({ map: signTex, side: THREE.DoubleSide });
     const sign = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 0.9), signMat);
     sign.position.set(0, 2.2, 0.3);
