@@ -211,12 +211,11 @@ if (!ONLY || ONLY === 'personality') {
     physics.dispose();
     return { t, h, top: y, steep: t > 0 ? t - t0 : -1 };
   };
-  const climb: Record<string, { t: number; h: number; top: number }> = {};
+  const climb: Record<string, ReturnType<typeof hill>> = {};
   for (const k of ALL) {
     climb[k] = hill(k);
     console.log(`  hill ${k.padEnd(8)} ${climb[k].t > 0 ? `summit in ${climb[k].t.toFixed(1)} s (36° section ${climb[k].steep.toFixed(1)} s)` : `stuck at ${climb[k].h.toFixed(1)} of ${climb[k].top.toFixed(1)} m`}`);
   }
-  const climbers = ALL.filter((k) => climb[k].t > 0);
   /** Hill start: placed at rest on a 36° gravel slope (facing uphill), full throttle 4 s → metres climbed along the slope. */
   const hillStart = (kind: VehicleKind): number => {
     const physics = new PhysicsWorld();
