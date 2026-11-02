@@ -4,7 +4,7 @@ import { Group, groups, RAPIER } from '../core/physics';
 import type { SpawnPoint, SurfaceType } from '../core/types';
 import { PolylineTrack } from './polylineTrack';
 import { SURFACE_COLORS } from './surfaces';
-import type { Checkpoint, World, Zone } from './types';
+import type { Checkpoint, JumpInfo, World, Zone } from './types';
 
 /**
  * Milestone-1 test level: flat field with an asphalt loop, a few speed bumps,
@@ -17,7 +17,7 @@ export class TestGround implements World {
   readonly zones: Zone[];
   readonly checkpoints: Checkpoint[];
   readonly spawns: { player: SpawnPoint; cpu: SpawnPoint };
-  readonly summit = new THREE.Vector3(0, 0, 0);
+  readonly jump: JumpInfo;
   private group = new THREE.Group();
   private debris: { body: RAPIER.RigidBody; home: SpawnPoint }[] = [];
   private mudPatch = { x: 0, z: 0, r: 12 };
@@ -33,9 +33,9 @@ export class TestGround implements World {
       const a = (i / n) * Math.PI * 2 * 0.96;
       ctrl.push(new THREE.Vector3(70 - Math.cos(a) * 70, 0, Math.sin(a) * 110));
     }
-    this.track = PolylineTrack.fromControlPoints(ctrl, this.roadHalfWidth, 0, 0);
-    // finish/summit = end of loop for the test level
-    Object.assign(this.track, { finishS: this.track.length * 0.95, summitS: this.track.length });
+    this.track = PolylineTrack.fromControlPoints(ctrl, this.roadHalfWidth, 0);
+    // Finish near the end of the loop; a nominal (ramp-less) "jump" lip just after it for the test level.
+    Object.assign(this.track, { finishS: this.track.length * 0.95 });
     this.zones = [{ id: 'test', startS: 0, endS: this.track.length }];
     this.checkpoints = [];
     for (let s = 0, i = 0; s < this.track.length; s += 150, i++) this.checkpoints.push({ index: i, s, respawn: this.spawnOnTrack(s, 0) });
@@ -45,7 +45,16 @@ export class TestGround implements World {
     this.mudPatch = { x: mud.x, z: mud.z, r: 12 };
     this.sandPatch = { x: sand.x, z: sand.z, r: 14 };
     this.spawns = { player: this.spawnOnTrack(8, -2.5), cpu: this.spawnOnTrack(8, 2.5) };
-    this.summit.copy(this.track.pointAt(this.track.length));
+    const lipS = this.track.length * 0.955;
+    this.jump = {
+      lipS,
+      bonusM: 20,
+      bonusS: lipS + 20,
+      runoffS: this.track.length * 0.99,
+      markerStepM: 10,
+      lip: this.track.pointAt(lipS),
+      bonusLine: this.track.pointAt(lipS + 20),
+    };
 
     ctx.renderer.scene.add(this.group);
     this.buildGround();

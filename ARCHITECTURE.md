@@ -61,7 +61,7 @@ Systems run in **registration order** (see `main.ts`): input → world → race 
 
 ### Collision groups
 
-`GROUND` (terrain/road/hill/ramps), `STATIC` (boulders, logs, bumps), `VEHICLE`, `DEBRIS` (hay, cones), `ANIMAL`, `SENSOR` (checkpoints/finish/summit). Wheel rays hit `GROUND | STATIC | DEBRIS` and skip sensors. Tag every collider with `physics.tag(collider, {kind, ...})` so contact handlers can tell what was hit. A ground collider can carry `surface` in its tag, which overrides `surfaceAt()` for wheels touching it.
+`GROUND` (terrain/road/ramps/bridge decks), `STATIC` (boulders, logs, bumps), `VEHICLE`, `DEBRIS` (hay, cones), `ANIMAL`, `SENSOR` (checkpoints/finish). Wheel rays hit `GROUND | STATIC | DEBRIS` and skip sensors. Tag every collider with `physics.tag(collider, {kind, ...})` so contact handlers can tell what was hit. A ground collider can carry `surface` in its tag, which overrides `surfaceAt()` for wheels touching it.
 
 ## input/
 
@@ -110,8 +110,8 @@ paramsFromSpec(spec) → VehicleParams     // the ONE place stats become physics
   * Body motion: `animate` leans and dips the body from wheel travel (on top of the physics pose) and lights the brake lights when `state.input.brake` is held while moving forward.
   * `renderVehicleThumbnails(items?, size?) → {kind, paint, url}[]`: PNG data URLs of the real models (3/4 view, transparent). Uses one short-lived WebGL context, cached per kind and paint.
   * Dev only: `src/vehicles/dev/preview.html?kind=sports|…|all|thumbs&view=34|side|rear|top&q=low|medium|high`. `node scripts/vehicle-shots.mjs [each|all|<kind>] [view] [quality]` writes `screenshots/vehicle-<kind>.png`.
-* `npm run physics-test` drives all 16 vehicles headless (sections: `npx tsx scripts/physics-test.ts personality|jump|damage|<kind>`; `jump` prints launch speed / distance off a 15° ramp per vehicle, `damage` checks thresholds, persistence through Reset, top-speed loss, steering pull and the visuals). Originally: all 6 vehicles headless (settle, 0-60, top speed, full-lock turn, slalom, braking, reverse, coast, ramp jump) and fails on regressions. It then runs the **personality checks** with the real `SURFACES` table: speed per surface, a 20°/28°/36° gravel bonus-hill climb, a 36° hill start, a suspension bounce test and a log crawl. Run only those with `npx tsx scripts/physics-test.ts personality`. Run it after tuning.
-* Optional `VehicleParams.climbTraction` (added in vehicles M2): on steep (> 6°) non-flat ground, engine force is capped at `mass·g·cos(slope)·climbTraction·(surfaceGrip/gravelGrip)`. It comes from the hill-climb stat, and tyre friction is raised to match so the stat, not Rapier wheelspin, decides who climbs. Optional `VehicleParams.climbPower` (W/kg) additionally caps drive force at `mass·climbPower/speed` on slopes over 14° (full at 20°), which sets the crawl speed up the bonus hill. Both come from the per-stat tables `CLIMB_TRACTION` / `CLIMB_POWER` in `vehicles/params.ts`.
+* `npm run physics-test` drives all 16 vehicles headless (sections: `npx tsx scripts/physics-test.ts personality|jump|damage|<kind>`; `jump` prints launch speed / distance off a 15° ramp per vehicle, `damage` checks thresholds, persistence through Reset, top-speed loss, steering pull and the visuals). Originally: all 6 vehicles headless (settle, 0-60, top speed, full-lock turn, slalom, braking, reverse, coast, ramp jump) and fails on regressions. It then runs the **personality checks** with the real `SURFACES` table: speed per surface, a 20°/28°/36° steep gravel climb (the old bonus hill's profile, kept as a steep-slope regression), a 36° hill start, a suspension bounce test and a log crawl. Run only those with `npx tsx scripts/physics-test.ts personality`. Run it after tuning.
+* Optional `VehicleParams.climbTraction` (added in vehicles M2): on steep (> 6°) non-flat ground, engine force is capped at `mass·g·cos(slope)·climbTraction·(surfaceGrip/gravelGrip)`. It comes from the hidden `spec.climb` value (the old visible "Hill climb" stat, now shown as Jump), and tyre friction is raised to match so the stat, not Rapier wheelspin, decides who climbs. Optional `VehicleParams.climbPower` (W/kg) additionally caps drive force at `mass·climbPower/speed` on slopes over 14° (full at 20°), which sets the crawl speed up very steep slopes. Both come from the per-stat tables `CLIMB_TRACTION` / `CLIMB_POWER` in `vehicles/params.ts`.
 * Surface top-speed caps live in `SURFACE_SPEED_PENALTY` (vehicle.ts), scaled by `1 − offroad`. The top-speed fade is compensated for aero, rolling resistance and damping, so flat-asphalt top speed equals `params.topSpeed`.
 
 ## world/
@@ -119,23 +119,23 @@ paramsFromSpec(spec) → VehicleParams     // the ONE place stats become physics
 ```ts
 interface World extends SurfaceQuery, System {
   track: TrackPath;                 // centre-line, arc-length parameterised (s in metres)
-  zones: Zone[];                    // {id: 'town'|'farm'|'mud'|'rocky'|'desert'|'river'|'finish'|'hill'|'test', startS, endS}
+  zones: Zone[];                    // {id: 'town'|'farm'|'mud'|'rocky'|'forest'|'canyon'|'snow'|'desert'|'river'|'finish'|'jump'|'test', startS, endS}
   checkpoints: Checkpoint[];        // {index, s, respawn: SpawnPoint}, ~every 300 m
   spawns: { player, cpu };          // side-by-side grid slots
-  summit: Vector3;
+  jump: JumpInfo;                   // the end jump: {lipS, bonusM, bonusS, runoffS, markerStepM, lip, bonusLine}
   surfaceAt(x, z): SurfaceType;     // called per wheel per step: must be cheap (no raycasts)
   heightAt(x, z): number;           // cheap approximate ground height for placing props/particles
   zoneAt(s): Zone;
   resetDynamic(): void;             // restore hay/cones, clear animals (race restart)
 }
 interface TrackPath {
-  length, finishS, summitS;
+  length, finishS;                  // length = to the end of the jump run-off
   pointAt(s), tangentAt(s), halfWidthAt(s);
   project(pos, hintS?) → { s, lateral }   // lateral > 0 = right of travel; pass last s as hint
 }
 createWorld(ctx, level)             // 'race' (default: the real course) | 'test' (M1 test ground; ?level=test)
 SURFACES                            // grip/drag/rolling per surface, tune here
-PolylineTrack.fromControlPoints(ctrl, halfWidth, finishS, summitS)   // reusable TrackPath impl
+PolylineTrack.fromControlPoints(ctrl, halfWidth, finishS)   // reusable TrackPath impl
 ```
 
 `TestGround` is a 140 × 220 m asphalt loop with speed bumps, a field of moguls, two ramps, a mud patch, a sand patch and 6 hay bales. It implements the full `World` interface, so race/AI/UI can be built against it before the real track exists.
@@ -144,29 +144,33 @@ PolylineTrack.fromControlPoints(ctrl, halfWidth, finishS, summitS)   // reusable
 
 | File | What |
 | --- | --- |
-| `layout.ts` | **Tune the course here.** Turtle segments (length + turn) → centre-line; zones; road widths; `FINISH_BEFORE_HILL_M` (the single finish-placement value); hill length/angles |
-| `course.ts` | `CourseData`: pure data, no DOM/GL. Elevation profile, 2 m terrain height grid, 1 m surface grid, river/hill/shortcut geometry, checkpoints, spawns, and every prop/obstacle/animal placement. `CourseTrack` is the `TrackPath` |
-| `terrain.ts` | Rapier heightfield (same grid and triangle split as the mesh, so `heightAt` is exact) + chunked render mesh. `TerrainShading`: `full` (8-layer texture-array splat + macro), `lite` (Low: no macro fetch), `simple` (no textures: per-vertex blend of each layer's average colour). `handles.setShading(mode)` swaps materials without rebuilding geometry |
-| `textures.ts` | Procedural textures from typed arrays (terrain layers, asphalt with lines, water normals, checker, pixel-font banners) |
-| `props.ts` | Low-poly vertex-coloured templates (trees, pines, bushes, rocks, tufts, houses, barn, fence, ramp, log bridge) + `ChunkMerger` (one mesh per 120–160 m chunk) |
-| `obstacles.ts` | Hay bales and cones (dynamic, sleeping, instanced), fixed boulders; emits `obstacle:hit` |
-| `animals.ts` | Deer, bear, mouse, ducks, croc: crossing schedule, light dynamic bodies, procedural models; emits `animal:crossing` / `animal:bump` |
+| `layout.ts` | **Tune the course here.** Turtle segments (length + turn) → centre-line; zones; road widths; `FINISH_STRAIGHT_M`; the **end-jump values** (`JUMP_RUNUP_M`, `JUMP_RAMP_LEN_M/DEG/HEIGHT_M`, `JUMP_BONUS_M` = the bonus line, `JUMP_TABLE_M`, `JUMP_LAND_DEG`, `JUMP_LANDING_M`, `JUMP_RUNOFF_M`, `JUMP_MARKER_STEP_M`); snowy-pass rise; gorge depth/bridge length |
+| `course.ts` | `CourseData`: pure data, no DOM/GL. Elevation profile (snow saddle, landing hill), 2 m terrain height grid, 1 m surface grid, river polyline (riverside run + crossing + ford) rasterised to per-node `(a, b)`, gorge, shortcut, jump geometry, checkpoints, spawns, and every prop/obstacle/animal placement. `CourseTrack` is the `TrackPath` (its heights follow the gorge-bridge deck) |
+| `terrain.ts` | Rapier heightfield (same grid and triangle split as the mesh, so `heightAt` is exact) + chunked render mesh. Layer weights in three vec4 attributes (`wA`, `wB`, `wC`, 12 slots, 11 used). `TerrainShading`: `full` (11-layer texture-array splat + macro), `lite` (Low: no macro fetch), `simple` (no textures: per-vertex blend of each layer's average colour). `handles.setShading(mode)` swaps materials without rebuilding geometry |
+| `textures.ts` | Procedural textures from typed arrays (terrain layers incl. snow / forest floor / red sandstone, asphalt with lines, water normals, checker, banners, the jump-marker sign atlas `makeSignAtlas`) |
+| `props.ts` | Low-poly vertex-coloured templates (trees, pines, snowy pines, cacti, bushes, rocks, tufts, houses, barn, fence, ramps by style, log bridge, fallen logs, gorge bridge, the big curved jump ramp, sign posts) + `ChunkMerger` (one mesh per 120–160 m chunk) |
+| `obstacles.ts` | Hay bales and cones (dynamic, sleeping, instanced), fixed boulders and fallen logs; emits `obstacle:hit` (`'hay bale' \| 'cone' \| 'boulder' \| 'log'`) |
+| `animals.ts` | 12 kinds (`ANIMAL_SPECS`): crossing schedule (4–6 per race, ≤ 2 damaging, ≥ 300 m apart, no repeated kind), light dynamic bodies, procedural models; emits `animal:crossing` / `animal:bump {damaging, speed}` |
 | `raceCourse.ts` | Assembles everything and implements `World` |
 
 All `s` values on the course are **horizontal** metres along the centre-line. `track.pointAt(s).y` is the real ground height. `tangentAt` is horizontal.
 
+**Course zones (5.13 km; finish line at 4.64 km):** town 370 m → farm 410 → mud 240 → rocky hills 460 (2 ramps) → forest trail 590 (fallen logs, ramp) → rocky canyon 580 (close red-rock walls, boulders, ramp, wooden road bridge over a 12 m gorge) → snowy pass 510 (22 m saddle, packed snow = `gravel`, cones) → desert 740 (dunes, 2 dune jumps, cacti) → river 572 (riverside run with the water on the right, then the Ω-loop ford / log-bridge shortcut) → finish straight 170 → jump 496 (230 m asphalt run-up, 16 m curved ramp, 140 m landing hill with distance boards every 10 m and the gold bonus gate, 110 m sand run-off ending in a berm and a hay wall).
+
+**The end jump** (`world.jump: JumpInfo`): the race measures each finisher's one attempt; jump distance = horizontal metres along the centre-line from `lipS` to the touchdown point. The ramp is 8 convex wedge slices (asphalt) approximating a circular arc; the landing hill is part of the road elevation profile (`CourseData.jumpDrop`).
+
 **Optional members on `RaceCourse`** (not on `World`, so they are duck-typed; `TestGround` has none of them):
 * `shortcuts: TrackShortcut[]`: `[{ id: 'log-bridge', startS, endS, points, halfWidth, maxSpeed }]` (AIWorldExtras, taken by the Hard computer).
-* `animals: AnimalInfo[]`: `{ kind, position, velocity, radius, active }`. The AI should steer around entries with `active === true`. Animals are also `Group.ANIMAL` colliders, so the existing ray sensor sees them.
+* `animals: AnimalInfo[]`: `{ kind, position, velocity, radius, active, damaging }`. The AI should steer around entries with `active === true`. Animals are also `Group.ANIMAL` colliders, so the existing ray sensor sees them.
 * `data: CourseData` (debug/tests), `animalsEnabled` (setter), `plannedAnimals`.
 
 **Terrain fallback** (`RaceCourse`): Low → `lite`, Medium/High → `full`. Falls to `simple` (and remembers it in localStorage `dirtrace.gpu.v1`) when the terrain program fails to compile/link (checked via `renderer.programFailed` after the first frame), on `quality:slow`, or with `?terrain=simple`. Decorative rocks, bushes and tufts are hidden on Low.
 
-Event kinds: obstacles `'hay bale' | 'cone' | 'boulder'`; animals `'deer' | 'bear' | 'mouse' | 'duck' | 'croc'`.
+Event kinds: obstacles `'hay bale' | 'cone' | 'boulder' | 'log'`; animals `'deer' | 'bear' | 'mouse' | 'duck' | 'croc' | 'moose' | 'boar' | 'bull' | 'cow' | 'goat' | 'rabbit' | 'camel'`. **Damaging** (`animal:bump.damaging === true`): bear, moose, bull, boar, croc. `animal:bump.speed` = relative horizontal impact speed (m/s, car vs the animal's pre-contact velocity).
 
-Collider tags: ramps `ground/asphalt`, bridge `ground/dirt`, potholes `static/'bump'` (the AI sensor ignores bumps), fences `static/'fence'`, houses `static/'wall'`, near-road tree trunks `static/'tree'`, boulders `static/'boulder'`.
+Collider tags: ramps (incl. the end-jump ramp) `ground/asphalt`, log bridge and gorge bridge decks `ground/dirt`, potholes `static/'bump'` (the AI sensor ignores bumps), fences and gorge-bridge rails `static/'fence'`, houses `static/'wall'`, near-road tree trunks `static/'tree'`, boulders `static/'boulder'`, fallen logs `static/'log'`.
 
-Tests: `npm run world-test` (headless: drives the course with all six vehicles, checks the hill, the shortcut and the zones). `node scripts/world-shots.mjs` (after a build) writes `screenshots/world-*.png` and prints draw calls per zone.
+Tests: `npm run world-test` (headless, ~8 min: course/zone/surface/grade/gorge/river/jump-geometry checks, animal schedule, every animal kind bumps with the right `damaging` flag, all six vehicles drive to the finish, **jump outcomes per vehicle** (from a run-up and from a standing start at the finish line), the shortcut, the computer driver on several difficulties incl. its jump). `npx tsx scripts/jump-tune.ts [kinds]` prints lip speed / distance / airtime / landing per vehicle (`START=0` standing start, `NOISE=0.3` wobbly steering). `npx tsx scripts/course-stats.ts` prints build time, grid size, triangles, buffer memory and colliders. `node scripts/world-shots.mjs` (after a build; `PREFIX=r2-` for the round-2 set) writes screenshots of every zone, the jump (ramp, mid-air, landing markers, bonus) and every animal, and prints draw calls per shot.
 
 ## race/
 
@@ -177,9 +181,10 @@ class RaceController implements System, RaceView {
   startSpin(); startCountdown(); abort(); startFreeDrive(); setPhase(p);
   requestReset(racer, delay = 2 s); isResetting(racer); respawnFor(racer); canDrive(racer); dispose();
 }
-RaceConfig { timeLimitS 240, bonusTimeS 45, finishAt 'hillFoot'|'summit', resetDelayS 2,
-             countdownS 3, resultsDelayS 1.5, summitRadiusM 7, cpuGraceS 12 }
-RacerProgress { s, bestS, lateral, checkpoint, finished, finishTimeS, summit, position, stage, bonusLeftS, points }
+RaceConfig { timeLimitS 480, bonusTimeS 45, resetDelayS 2, countdownS 3, resultsDelayS 1.5,
+             jumpLandS 1.0, jumpMissM 25, cpuGraceS 12 }
+RacerProgress { s, bestS, lateral, checkpoint, finished, finishTimeS, jump: 'none'|'air'|'landing'|'done',
+                jumpM, jumpCrashed, jumpBonus, position, stage, bonusLeftS, points }
 class RaceFlow { newRace(); prepare(); quit(); vehicles; computer; picks; aiSystem; vehicleSystem }
 randomSpin(): VehiclePicks                                     // stub SpinFn until the vehicles spin lands
 session.score / session.add(racer, pts) / session.clear()     // localStorage
@@ -191,21 +196,28 @@ session.score / session.add(racer, pts) / session.clear()     // localStorage
   only while `canDrive(racer)` is true. Otherwise it uses a *hold* input that brakes to a stop and never reverses.
   Don't use `vehicle.setFrozen()` for the countdown: its brake=1 makes a stopped car reverse. `control.enabled`
   (PlayerInput / AIDriver) is toggled to match.
-* **Rules:** first across `finishS` wins 1 point. Each finisher gets its own 45 s bonus window, and reaching the summit
-  (`bestS ≥ summitS − 1` or within `summitRadiusM` of `world.summit`) gives +1. When the 4-minute timer runs out,
+* **Rules:** first across `finishS` wins 1 point. Each finisher gets its own 45 s bonus window for **one end-jump attempt**:
+  airborne (no wheel contact, `airTime > 0.12 s`) within `lipS − 4 … lipS + 15` → `race:takeoff`; touchdown = first step
+  with ≥ 2 wheels on the ground (records `s`); the landing counts if the car stays upright (`up.y ≥ 0.5`, not flipped)
+  for `jumpLandS`; otherwise it's a crash. Distance = touchdown `s − lipS`. Clean and ≥ `world.jump.bonusM` → +1.
+  Passing `lipS + jumpMissM` without leaving the ground ends the attempt at 0 m; a Reset mid-jump is a crash. After the
+  attempt (`race:jump {distanceM, bonus, crashed}`) the racer is done and the race holds its car (brakes to a stop in the
+  run-off). An attempt already in the air when the window runs out still gets to land. When the 8-minute timer runs out,
   anyone still racing is done. If nobody finished, the higher `bestS` wins (a gap under 0.5 m is a tie with no
   points). Once Brooks is done, the computer gets at most `cpuGraceS` more seconds. When every racer is done, the
   results screen follows `resultsDelayS` later. Distances in the results are measured from the grid.
-* **Resets:** `requestReset` → `race:resetting` → teleport after the delay to the last checkpoint. On the bonus
-  hill the car goes back to the finish line instead. Flips auto-reset after 0.5 s. Resets are ignored when the car
+* **Resets:** `requestReset` → `race:resetting` → teleport after the delay to the last checkpoint. After the finish
+  the car goes back to the finish line (start of the run-up) instead. Flips auto-reset after 0.5 s. Resets are ignored when the car
   can't drive.
 * **Spin integration:** pass `spin: SpinFn` (returns `{player, cpu}` picks) and `showSpin(picks) → Promise` (the reel UI)
   to `RaceFlow`. Until those are merged, main uses `randomSpin` plus the placeholder `ui.spin` card.
 * **Events emitted:** `phase:changed`, `race:countdown {n}` (3, 2, 1), `race:go`, `race:checkpoint`,
-  `race:finish {winner}`, `race:bonus`, `race:summit`, `race:timeout`, `race:lead {leader}`, `race:resetting`,
-  `race:done`, `race:results` (`RaceResults` also carries optional `reason`, `finishM`, `summitM`).
-* `npm run race-test`: headless full races on TestGround (each difficulty, idle player / 4-minute timer, farthest rule,
-  tie, reset delay, Hard shortcut, AI cost). It's part of `npm test`.
+  `race:finish {winner}`, `race:bonus`, `race:takeoff`, `race:jump {distanceM, bonus, crashed}`, `race:timeout`,
+  `race:lead {leader}`, `race:resetting`, `race:done`, `race:results` (`RaceResults` also carries optional `reason`,
+  `finishM`, `jumpBonusM`; each `RacerResult` has `bonus` (jump bonus), `jumpM`, `jumpCrashed`).
+* `npm run race-test`: headless full races on TestGround (each difficulty, idle player / 8-minute timer, farthest rule,
+  tie, reset delay, Hard shortcut, AI cost) plus **scripted end-jump rule checks** with fake cars (bonus, short, crash,
+  no take-off, one attempt, window expiry, reset mid-air). It's part of `npm test`. `WORLD=race` runs it on the real course.
 
 ## ai/
 
@@ -217,7 +229,8 @@ Rapier rays vs STATIC|DEBRIS|ANIMAL|VEHICLE), `rival: { gapM() }` (Easy eases of
 * At construction it precomputes, for its own car: a racing line (lateral offset toward the inside of curves, smoothed)
   and a speed profile (curvature × surface grip, slowed for steep descents and crests, then a backward braking pass).
   Per step it does a pure-pursuit steer to a look-ahead of 5 + 0.55·v m and runs a throttle/brake P-controller. On
-  slopes steeper than 0.2 it holds full throttle (the bonus hill).
+  slopes steeper than 0.2 it holds full throttle. **After `track.finishS`** (the end-jump run-up) every difficulty
+  drives flat out at its car's full top speed: no mistakes, no easing off.
 * Obstacles: 5 rays at 12 Hz. Hits are stored in track space (s, lateral) for 1.5 s, and a tiny lane planner picks
   the clear lateral offset closest to the line.
 * Stuck: reverses out when it's slow with throttle down, or does a three-point turn when facing backwards. With no
@@ -232,13 +245,13 @@ Rapier rays vs STATIC|DEBRIS|ANIMAL|VEHICLE), `rival: { gapM() }` (Easy eases of
 `new UI(root, handlers: UIHandlers)` provides the title (SVG logo, loading bar via `ui.setLoading(f, label)`, Start, How to play, first-launch Rotation Lock / Add to Home Screen tip), calibrate ("hold it like a wheel"; Ready waits for `handlers.courseReady`), the How to play card (`help`), and pause/settings screens (sensitivity, tilt direction, steering, computer, graphics Low/Med/High/Auto, units, volumes) plus `toast()`. Screens are plain HTML via the `Screen` helper. Buttons use `onTap` (a click on an element with `touch-action: manipulation`, which counts as a user activation on iOS). The UI reads `RaceView`, `VehicleState` and the event bus. It never touches physics. The HUD speedometer lives in `input/touch.ts` between the pedals (`touch.setSpeed(kmh, settings.speedUnit)`).
 
 Race UI (`ui/raceHud.ts`):
-* `RaceHud` (a System): position badge, race clock (red under 30 s), progress strip (start, finish flag, hill, summit
-  flag, both cars in their paint colours), bonus-hill banner with its own countdown, the big 3-2-1-GO (driven by
-  `race.countdownLeftS`, so it stays in sync with sim time), "Resetting…", and short messages (lead change,
-  win, summit, time's up).
+* `RaceHud` (a System): position badge, race clock (8:00, red under 30 s), progress strip (start, finish flag, a little
+  ramp wedge at the jump lip, a ⭐ at the bonus line, both cars in their paint colours; `setTrack({length, finishS, jumpS,
+  bonusS})`), bonus-jump banner with its own countdown, the big 3-2-1-GO (driven by `race.countdownLeftS`, so it stays in
+  sync with sim time), "Resetting…", and short messages (lead change, win, jump distance / bonus / crash, time's up).
 * `ResultsScreen` (`ui.results`): winner, how it was decided, a card per racer (vehicle, distance bar, finish time or
-  distance reached, summit bonus, damage % (`RacerResult.damage`, Round 2), points), session score, plus RACE AGAIN / Menu (`handlers.onRaceAgain`, `onResultsMenu`).
-  CSS confetti + bouncing trophy when Brooks wins (gold stars for a summit bonus).
+  distance reached, **jump distance** and whether it earned the bonus, damage % (`RacerResult.damage`), points), session score, plus RACE AGAIN / Menu (`handlers.onRaceAgain`, `onResultsMenu`).
+  CSS confetti + bouncing trophy when Brooks wins (gold stars for a jump bonus).
 * `DamageMeter` (`ui/damageMeter.ts`, Round 2): car icon above the speedometer, green → yellow → orange → red, with the %. Purely event-driven (`car:damage` for the player, `phase:changed`, `app:paused`); created with one line in main.ts.
 * Pause screen adds **Computer: Easy / Normal / Hard** (takes effect from the next race) and **Speed in: mph / km/h**
   (`settings.speedUnit`, default mph; results distances are shown in feet or metres to match).
@@ -278,7 +291,7 @@ audio.setCountdownVoice(urls | null)
 
 Graph: engines, tyres and one-shots go to the **game** bus and the sequencer goes to the **music** bus. Both feed **master**, which mutes on pause or hide, then a limiter, then the output. UI clicks use a **ui** bus that bypasses the pause mute. Engines and tyres only sound in `countdown`, `racing`, `bonus`, `freeDrive` and `results` (at half volume in `results`). The player's car is the listener: the CPU car and world sounds are attenuated (`1/(1+d/12)`), panned and low-passed by distance.
 
-**Events consumed:** `phase:changed` (music: title/calibrate/spin → menu, countdown → silence, racing/bonus/freeDrive → race, results → menu after 2.8 s), `app:paused`, `settings:changed`, `race:countdown` (voice clip or beep), `race:go` (horn, plus the voice clip if present), `race:checkpoint` (player chime), `race:finish` (cheer + win jingle, or "good try" jingle), `race:summit` (fanfare), `race:timeout` (buzzer), `vehicle:landed` (thump scaled by impact), `vehicle:collision` (crash / car bump / boing), `vehicle:surface` (splash / squelch / crunch on entering), `vehicle:flipped`, `vehicle:reset`, `obstacle:hit` (hay / cone / crash by `kind`), `animal:crossing`, and optional events (below). Per-frame state comes from `VehicleState`: `rpm`, `input.throttle`, `speed`, `surface`, `wheels[].slip/contact/surface`, `wheelsOnGround`, `airTime`, `position`, `forward`.
+**Events consumed:** `phase:changed` (music: title/calibrate/spin → menu, countdown → silence, racing/bonus/freeDrive → race, results → menu after 2.8 s), `app:paused`, `settings:changed`, `race:countdown` (voice clip or beep), `race:go` (horn, plus the voice clip if present), `race:checkpoint` (player chime), `race:finish` (cheer + win jingle, or "good try" jingle), `race:jump` with `bonus` (fanfare), `race:timeout` (buzzer), `vehicle:landed` (thump scaled by impact), `vehicle:collision` (crash / car bump / boing), `vehicle:surface` (splash / squelch / crunch on entering), `vehicle:flipped`, `vehicle:reset`, `obstacle:hit` (hay / cone / crash by `kind`), `animal:crossing`, and optional events (below). Per-frame state comes from `VehicleState`: `rpm`, `input.throttle`, `speed`, `surface`, `wheels[].slip/contact/surface`, `wheelsOnGround`, `airTime`, `position`, `forward`.
 
 **Optional events added for audio** (emit them when ready; nothing breaks if they never fire): `spin:tick {racer}` (one per reel item, throttled to 35 ms), `spin:land {racer, kind}`, `race:lead {leader}` (lead changes only), `animal:bump {kind, racer, x, z}`. Animal kinds are matched by substring (duck, mouse, deer, bear, croc), and anything else gets a boing. Obstacle kinds: hay/bale, cone, fence/crate/barrel → bump, anything else → crash.
 
@@ -288,11 +301,11 @@ Tests: `npm run audio-test` (in `npm test`) renders every generator in Node and 
 
 * `ChaseCamera`: `target`, `toggleMode()` (close/far, persisted), `shake(amount)`, `snap()`, `override` (main uses it for the slow title-screen orbit around the parked cars). Shake fires automatically on hard landings.
 * `Effects` (`fx/index.ts`): `track(v)` / `untrack(v)`, `setWorld(world)`, `clear()`, `dispose()`. At most **3 draw calls**, each hidden when empty:
-  * `particles.ts` `ParticleSystem`: one `THREE.Points` pool (700, live cap = 700 × `detail`) with a metre-sized round sprite shader, fog-aware, on-screen size capped. Dust on dirt/gravel/sand (rear wheels, fronts when sliding), mud spray, water splashes, exhaust, tyre smoke, landing puffs, summit sparkles.
-  * `debris.ts` `DebrisSystem`: one `InstancedMesh` pool (260) of tumbling flat pieces that settle on `heightAt`: hay strands (`obstacle:hit`), finish confetti cannons on both gantry posts (`race:finish`), golden flakes from the flag top + a fountain around the car (`race:summit`).
+  * `particles.ts` `ParticleSystem`: one `THREE.Points` pool (700, live cap = 700 × `detail`) with a metre-sized round sprite shader, fog-aware, on-screen size capped. Dust on dirt/gravel/sand (rear wheels, fronts when sliding), mud spray, water splashes, exhaust, tyre smoke, landing puffs, jump-bonus sparkles.
+  * `debris.ts` `DebrisSystem`: one `InstancedMesh` pool (260) of tumbling flat pieces that settle on `heightAt`: hay strands (`obstacle:hit`), finish confetti cannons on both gantry posts (`race:finish`), golden flakes from the bonus gate's banner + a fountain around the car (`race:jump` with `bonus`).
   * `skidMarks.ts` `SkidMarks`: one ring-buffer mesh (600 quads) on asphalt when `wheel.slip > 0.4`, fading in quarters.
   * Blob shadows (one small quad per car) only when real shadows are off (Low).
-  * Events: `vehicle:landed`, `obstacle:hit`, `animal:bump`, `race:finish`, `race:summit`, `quality:changed`; cleared on `phase:changed` → spin/title.
+  * Events: `vehicle:landed`, `obstacle:hit`, `animal:bump`, `race:finish`, `race:jump`, `quality:changed`; cleared on `phase:changed` → spin/title. `FxWorld` needs `jump.bonusLine`.
   * Damage smoke (Round 2): from 35 % damage each tracked car puffs smoke from `spec.engineZ` (white → grey at 55 % → black at 85 %+), rate rising with damage, in the same particle pool.
 
 ## Debug hooks
@@ -316,5 +329,7 @@ World, race, AI, vehicles and HUD are registered in the loop as *slots* (in the 
 | `npm test` | tilt maths, headless physics, race/AI and audio generator tests (no browser) |
 | `npm run race-test` | full headless races on TestGround (rules, scoring, difficulties) |
 | `npm run smoke` | serves `dist/` under `/dirt-race/`, plays spin → countdown → race → results → Race Again ×5 in headless Chrome. Checks: GPU memory/bodies flat across races, effects, settings, quality auto-drop + persistence, Low → simple terrain, Start-during-loading requests tilt permission inside the gesture (4× CPU throttle, fake iOS API), `?terrain=simple` renders, SW/offline/rotate overlay. Writes `screenshots/` (`QUALITY=medium npm run smoke` for shadows) |
-| `node scripts/world-shots.mjs` | after a build: every zone + `fx-splash/hay/confetti/summit` screenshots, draw calls/triangles per shot (`QUALITY=low|medium|high`, `ZONES=a,b`, `FX=1`) |
+| `node scripts/world-shots.mjs` | after a build: every zone, the gorge/log bridges, the end jump (ramp, mid-air, landed, landing markers, bonus), every animal and `fx-splash/hay/confetti`, with draw calls/triangles per shot (`QUALITY=low|medium|high`, `PREFIX=r2-`, `ZONES=a,b`, `FX=1`, `JUMP=0`, `ANIMALS=0`, `ANIMAL_KINDS=a,b`) |
+| `npx tsx scripts/jump-tune.ts` | end-jump outcome per vehicle (lip speed, distance, airtime, landing) |
+| `npx tsx scripts/course-stats.ts` | course build time, grid size, triangles, buffer memory, colliders |
 | `npm run audio-render` | renders sounds via OfflineAudioContext in headless Chrome → `screenshots/audio/` |

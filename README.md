@@ -1,6 +1,6 @@
 # Dirt Race
 
-A tilt-to-steer 3D racing game for iPad, made for Brooks. Two players (Brooks and the computer) each get a random vehicle from a slot-machine spin. Then they race across town, farm, mud, rocks, desert and a river to the finish line. A steep bonus hill with a golden flag gives an extra point.
+A tilt-to-steer 3D racing game for iPad, made for Brooks. Two players (Brooks and the computer) each get a random vehicle from a slot-machine spin. Then they race about 5 km across town, farm, mud, rocky hills, a forest trail, a canyon, a snowy pass, desert and a river to the finish line. After the finish a big jump ramp gives an extra point to anyone who lands past the golden bonus line.
 
 Three.js + Rapier physics + TypeScript, built with Vite. Everything (models, textures, sounds, music) is generated in code, so there's nothing to download except the game itself. It works offline after the first visit.
 
@@ -42,7 +42,7 @@ WORLD=race npm run race-test   # full race rules on the real course
 
 Screenshots go to `screenshots/`.
 
-`node scripts/world-shots.mjs` (after a build; `QUALITY=low|medium|high`) takes a screenshot of every course zone plus the effects (splash, hay, confetti, summit) and prints draw calls and triangles.
+`node scripts/world-shots.mjs` (after a build; `QUALITY=low|medium|high`) takes a screenshot of every course zone plus the effects (splash, hay, confetti, the end jump) and prints draw calls and triangles.
 
 ## Deploy to GitHub Pages
 
@@ -84,8 +84,8 @@ The game starts on **Medium** with **Auto** on. If the frame rate sags during a 
 ```
 src/core     renderer, loop, physics, quality, settings, events
 src/input    tilt, touch pedals, keyboard
-src/vehicles six procedural vehicles + ray-cast physics
-src/world    the course: terrain, props, obstacles, animals, river, hill
+src/vehicles 16 procedural vehicles + damage, + ray-cast physics
+src/world    the course: terrain, props, obstacles, animals, river, end jump
 src/race     race rules + flow (spin → countdown → race → results)
 src/ai       the computer driver
 src/ui       title, how to play, settings, HUD, results, vehicle spin

@@ -5,9 +5,9 @@ import type { RacerId } from '../core/types';
 import type { CourseData, Placement } from './course';
 
 /**
- * Dynamic debris (hay bales, cones) drawn with one InstancedMesh per kind, plus fixed boulders.
- * Debris sleeps until hit; only awake bodies update their instance matrix.
- * Emits 'obstacle:hit' (kind contains 'hay bale' / 'cone' / 'boulder') when a vehicle hits one.
+ * Dynamic debris (hay bales, cones) drawn with one InstancedMesh per kind, plus fixed boulders and fallen
+ * logs (their visuals are merged into the course props). Debris sleeps until hit; only awake bodies update
+ * their instance matrix. Emits 'obstacle:hit' (kind 'hay bale' / 'cone' / 'boulder' / 'log') when a vehicle hits one.
  */
 interface Debris {
   body: RAPIER.RigidBody;
@@ -47,6 +47,7 @@ export class Obstacles {
     this.buildHay(c.hay);
     this.buildCones(c.cones);
     this.buildBoulders(c.boulders);
+    this.buildLogs();
     this.offCollision = physics.onCollision((h1, h2, started) => {
       if (!started) return;
       const r1 = this.vehicleRacer(h1);
@@ -174,6 +175,25 @@ export class Obstacles {
       );
       this.physics.tag(col, { kind: 'static', name: 'boulder' });
       this.byHandle.set(col.handle, { kind: 'boulder', pos: new THREE.Vector3(b.x, b.y, b.z), lastHit: -9 });
+    }
+  }
+
+  private buildLogs(): void {
+    const fixed = this.physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    const qz = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2);
+    for (const l of this.c.logs) {
+      const q = new THREE.Quaternion().setFromAxisAngle(UP, l.yaw).multiply(qz);
+      const col = this.physics.world.createCollider(
+        RAPIER.ColliderDesc.cylinder(l.length / 2, l.radius)
+          .setTranslation(l.x, l.y + l.radius * 0.85, l.z)
+          .setRotation(q)
+          .setFriction(0.5)
+          .setCollisionGroups(groups(Group.STATIC, 0xffff))
+          .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS),
+        fixed,
+      );
+      this.physics.tag(col, { kind: 'static', name: 'log' });
+      this.byHandle.set(col.handle, { kind: 'log', pos: new THREE.Vector3(l.x, l.y, l.z), lastHit: -9 });
     }
   }
 

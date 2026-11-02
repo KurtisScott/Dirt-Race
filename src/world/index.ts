@@ -1,4 +1,4 @@
-export type { World, TrackPath, Checkpoint, Zone, ZoneId, SurfaceQuery } from './types';
+export type { World, TrackPath, Checkpoint, Zone, ZoneId, SurfaceQuery, JumpInfo } from './types';
 export { SURFACES, SURFACE_COLORS } from './surfaces';
 export { PolylineTrack } from './polylineTrack';
 export { TestGround } from './testGround';

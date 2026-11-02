@@ -851,11 +851,14 @@ h2 {
   background: rgba(255, 255, 255, 0.55);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
 }
-.rh-hill {
+.rh-jump {
+  /* End-jump ramp: a wedge whose lip (right edge) sits at the take-off point. */
   position: absolute;
-  top: 2px;
-  height: 26px;
-  background: linear-gradient(to top right, #8a6b3d 50%, transparent 51%);
+  top: 6px;
+  width: 18px;
+  height: 22px;
+  transform: translateX(-100%);
+  background: linear-gradient(to top left, #d0442f 50%, transparent 51%);
   opacity: 0.95;
 }
 .rh-flag {

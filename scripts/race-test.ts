@@ -4,9 +4,11 @@
  *
  *  1. For each difficulty: the computer races a "stand-in Brooks" (an AI on Normal) in identical pickups.
  *     Checks the state machine (countdown frozen → GO → finish → bonus → results), points, session score.
- *  2. Brooks does nothing (full 4-minute timer): computer finishes and should win; results arrive at the timer.
+ *  2. Brooks does nothing (full 8-minute timer): computer finishes and should win; results arrive at the timer.
  *  3. Nobody finishes before a short timer: farthest along the centre-line wins.
  *  4. Both idle: tie, no points. Reset button: respawn after 2 s.
+ *  6. End-jump rules on a scripted straight (fake cars): bonus landing, short landing, crash landing,
+ *     no take-off, one attempt only, window running out, reset mid-jump.
  */
 import * as THREE from 'three';
 
@@ -33,9 +35,10 @@ const { TestGround } = await import('../src/world/testGround');
 const { RaceCourse } = await import('../src/world/raceCourse');
 /** WORLD=race runs the same races on the real course (default: the M1 test ground, fast). */
 const USE_RACE_COURSE = process.env.WORLD === 'race';
-/** Scale for the short solo timers (the test loop is ~560 m; the real course ~2.5 km). */
-const SOLO_T = USE_RACE_COURSE ? 3 : 1;
-const { RaceController, RaceFlow, session } = await import('../src/race');
+/** Scale for the short solo timers (the test loop is ~560 m; the real course ~4.6 km to the finish). */
+const SOLO_T = USE_RACE_COURSE ? 5 : 1;
+const { RaceController, RaceFlow, session, DEFAULT_RACE_CONFIG } = await import('../src/race');
+const { PolylineTrack } = await import('../src/world/polylineTrack');
 const { AIDriver, createPhysicsSensor } = await import('../src/ai');
 const { createVehicle } = await import('../src/vehicles/vehicle');
 const { VEHICLES } = await import('../src/vehicles/catalog');
@@ -79,7 +82,8 @@ function runRace(o: Opts) {
     quality: { preset: { textureSize: 64, detail: 0.5 } },
   } as never;
   const world = USE_RACE_COURSE ? new RaceCourse(ctx) : new TestGround(ctx);
-  const race = new RaceController(world, o.timeLimitS ? { timeLimitS: o.timeLimitS } : {});
+  // The test loop has no ramp after its finish: a short miss distance ends the (ramp-less) attempt quickly.
+  const race = new RaceController(world, { ...(o.timeLimitS ? { timeLimitS: o.timeLimitS } : {}), ...(USE_RACE_COURSE ? {} : { jumpMissM: 8 }) });
   const playerInput = {
     state: { steer: 0, throttle: 0, brake: 0 },
     enabled: false,
@@ -120,7 +124,7 @@ function runRace(o: Opts) {
       'race:countdown',
       'race:go',
       'race:finish',
-      'race:summit',
+      'race:jump',
       'race:timeout',
       'race:results',
       'race:lead',
@@ -149,7 +153,7 @@ function runRace(o: Opts) {
   const offRes = events.on('race:results', (r) => (results = r));
   let positionsDuringCountdown: { x: number; z: number }[] | null = null;
   let movedInCountdown = 0;
-  const maxSteps = Math.round((o.maxSimS ?? 330) / PHYSICS_DT);
+  const maxSteps = Math.round((o.maxSimS ?? DEFAULT_RACE_CONFIG.timeLimitS + 90) / PHYSICS_DT);
   let resultsAt = -1;
   for (let i = 0; i < maxSteps; i++) {
     simT = i * PHYSICS_DT;
@@ -209,7 +213,7 @@ const fmt = (r: RaceResults | null): string =>
   r
     ? `winner=${r.winner} (${r.reason}) ` +
       r.racers
-        .map((x) => `${x.racer}: ${x.distanceM} m ${x.finished ? `fin ${x.timeS?.toFixed(1)} s` : 'dnf'}${x.bonus ? ' +summit' : ''} pts ${x.points}`)
+        .map((x) => `${x.racer}: ${x.distanceM} m ${x.finished ? `fin ${x.timeS?.toFixed(1)} s` : 'dnf'}${x.jumpM !== null && x.jumpM !== undefined ? ` jump ${x.jumpM} m` : ''}${x.bonus ? ' +bonus' : ''} pts ${x.points}`)
         .join(' | ') +
       ` session ${r.session.player}-${r.session.cpu}`
     : 'no results';
@@ -243,7 +247,7 @@ for (const d of ['easy', 'normal', 'hard'] as Difficulty[]) {
   check(phases.join(',') === 'spin,countdown,racing,bonus,results', `phases: ${phases.join(' → ')}`);
   for (const rr of res.racers) {
     const expected = (res.winner === rr.racer ? 1 : 0) + (rr.bonus ? 1 : 0);
-    check(rr.points === expected, `${rr.racer} points ${rr.points} = win ${res.winner === rr.racer ? 1 : 0} + summit ${rr.bonus ? 1 : 0}`);
+    check(rr.points === expected, `${rr.racer} points ${rr.points} = win ${res.winner === rr.racer ? 1 : 0} + jump bonus ${rr.bonus ? 1 : 0}`);
   }
   check(
     res.session.player === before.player + res.racers[0].points && res.session.cpu === before.cpu + res.racers[1].points,
@@ -253,8 +257,13 @@ for (const d of ['easy', 'normal', 'hard'] as Difficulty[]) {
   check(saved.player === res.session.player && saved.cpu === res.session.cpu, 'session score persisted to localStorage');
   const cpuFin = res.racers[1];
   check(cpuFin.finished, `computer (${d}) finished: ${cpuFin.timeS?.toFixed(1)} s`);
-  const summits = r.log.filter((e) => e.type === 'race:summit').length;
-  check(summits === res.racers.filter((x) => x.bonus).length, `race:summit events (${summits}) match bonus flags`);
+  const jumps = r.log.filter((e) => e.type === 'race:jump') as { payload: { racer: RacerId; bonus: boolean; distanceM: number } }[];
+  check(jumps.filter((e) => e.payload.bonus).length === res.racers.filter((x) => x.bonus).length, `race:jump bonus events (${jumps.length} jumps) match bonus flags`);
+  check(jumps.every((e) => res.racers.find((x) => x.racer === e.payload.racer)?.jumpM === e.payload.distanceM), 'results carry each jump distance');
+  check(new Set(jumps.map((e) => e.payload.racer)).size === jumps.length, 'at most one jump per racer');
+  if (USE_RACE_COURSE) {
+    for (const rr of res.racers) if (rr.finished && rr.racer === 'cpu') check(rr.jumpM !== null && rr.jumpM !== undefined && rr.jumpM > 20, `${rr.racer} (finished) jumped ${rr.jumpM} m`);
+  }
   const cpuResets = r.log.filter((e) => e.type === 'race:resetting' && (e.payload as { racer: string }).racer === 'cpu').length;
   check(cpuResets <= 2, `computer needed ${cpuResets} reset(s)`);
   console.log(
@@ -295,11 +304,11 @@ for (const kind of Object.keys(VEHICLES) as VehicleKind[]) {
   });
   const cpu = r.results?.racers[1];
   const resets = r.log.filter((e) => e.type === 'race:resetting' && (e.payload as { racer: string }).racer === 'cpu').length;
-  check(!!cpu?.finished, `${kind}: finished ${cpu?.timeS?.toFixed(1)} s, summit ${cpu?.bonus}, resets ${resets}`);
+  check(!!cpu?.finished, `${kind}: finished ${cpu?.timeS?.toFixed(1)} s, jump ${cpu?.jumpM ?? '—'} m${cpu?.bonus ? ' +bonus' : ''}, resets ${resets}`);
 }
 
 // -------------------------------------------------------------- 2. player does nothing (full timer)
-console.log('\n=== race: Brooks does nothing, computer on easy, full 4-minute timer ===');
+console.log('\n=== race: Brooks does nothing, computer on easy, full 8-minute timer ===');
 {
   const before = sessionBefore();
   const r = runRace({ cpuDifficulty: 'easy', player: 'idle' });
@@ -307,7 +316,9 @@ console.log('\n=== race: Brooks does nothing, computer on easy, full 4-minute ti
   console.log(`  ${fmt(res)}`);
   check(!!res && res.winner === 'cpu' && res.reason === 'finish', 'computer wins by finishing');
   check(!!first(r.log, 'race:timeout'), 'race:timeout fired for Brooks');
-  check(Math.abs(r.resultsAt - 3 - 240 - 1.5) < 0.2, `results at the 4-minute mark (+1.5 s celebration): ${(r.resultsAt - 3).toFixed(1)} s after GO`);
+  const T = DEFAULT_RACE_CONFIG.timeLimitS;
+  check(T === 480, 'time limit is 8 minutes');
+  check(Math.abs(r.resultsAt - 3 - T - 1.5) < 0.2, `results at the 8-minute mark (+1.5 s celebration): ${(r.resultsAt - 3).toFixed(1)} s after GO`);
   check(res?.racers[0].points === 0 && !res?.racers[0].finished && (res?.racers[0].distanceM ?? 99) < 5, `Brooks: 0 points, ${res?.racers[0].distanceM} m`);
   check(res?.session.player === before.player && res?.session.cpu === before.cpu + (res?.racers[1].points ?? 0), 'session: only the computer scores');
 }
@@ -457,6 +468,130 @@ for (const d of ['easy', 'hard'] as Difficulty[]) {
   );
   check(aiMs / steps < 0.1, `${d}: AI cost ${((aiMs / steps) * 1000).toFixed(0)} µs per step (Node, incl. ray casts)`);
   physics.dispose();
+}
+
+// -------------------------------------------------------------- 6. end-jump rules (scripted, fake cars)
+console.log('\n=== end jump rules (scripted straight track, fake cars) ===');
+{
+  // A 600 m straight: finish at 300, lip at 400, bonus line +60 m.
+  const pts = Array.from({ length: 61 }, (_, i) => new THREE.Vector3(0, 0, i * 10));
+  const track = new PolylineTrack(pts, 6, 300);
+  const lipS = 400;
+  const fakeWorld = {
+    track,
+    zones: [{ id: 'test', startS: 0, endS: 600 }],
+    checkpoints: [],
+    spawns: { player: { x: -2, y: 0, z: 5, yaw: 0 }, cpu: { x: 2, y: 0, z: 5, yaw: 0 } },
+    jump: { lipS, bonusM: 60, bonusS: lipS + 60, runoffS: 540, markerStepM: 10, lip: new THREE.Vector3(0, 2, lipS), bonusLine: new THREE.Vector3(0, 0, lipS + 60) },
+    surfaceAt: () => 'asphalt',
+    heightAt: () => 0,
+    zoneAt: () => ({ id: 'test', startS: 0, endS: 600 }),
+    resetDynamic: () => {},
+  } as never;
+  const fakeCar = (racer: RacerId) => ({
+    racer,
+    spec: { name: 'Fake' },
+    position: new THREE.Vector3(0, 0, 5),
+    quaternion: new THREE.Quaternion(),
+    speed: 0,
+    wheelsOnGround: 4,
+    airTime: 0,
+    flipped: false,
+    input: { steer: 0, throttle: 0, brake: 0 },
+    reset(sp: { x: number; z: number }) {
+      this.position.set(sp.x, 0, sp.z);
+      this.wheelsOnGround = 4;
+      this.airTime = 0;
+      this.quaternion.identity();
+    },
+  });
+  /** Script: z(t) positions and air/landing flags for the player; the cpu sits still. */
+  type Step = (t: number, car: ReturnType<typeof fakeCar>, race: InstanceType<typeof RaceController>) => void;
+  const scenario = (name: string, script: Step, maxT = 40) => {
+    const race = new RaceController(fakeWorld, { bonusTimeS: 20 });
+    const p = fakeCar('player');
+    const c = fakeCar('cpu');
+    race.setVehicle('player', p as never);
+    race.setVehicle('cpu', c as never);
+    const evs: { type: string; payload: unknown }[] = [];
+    const offs = (['race:jump', 'race:takeoff', 'race:done', 'race:finish'] as const).map((type) => events.on(type, (payload: unknown) => evs.push({ type, payload })));
+    race.startCountdown();
+    for (let t = 0; t < maxT; t += PHYSICS_DT) {
+      if (race.phase === 'racing' || race.phase === 'bonus') script(t, p, race);
+      race.fixedUpdate(PHYSICS_DT);
+      race.postPhysics(PHYSICS_DT);
+      if (race.progress.player.stage === 'done') break;
+    }
+    offs.forEach((f) => f());
+    const jumpsEv = evs.filter((e) => e.type === 'race:jump').map((e) => e.payload as { distanceM: number; bonus: boolean; crashed: boolean });
+    const pr = race.progress.player;
+    console.log(`  ${name}: jump ${pr.jumpM ?? '—'} m, bonus ${pr.jumpBonus}, crashed ${pr.jumpCrashed}, points ${pr.points}, events ${jumpsEv.length}`);
+    race.dispose();
+    return { pr, jumpsEv, takeoffs: evs.filter((e) => e.type === 'race:takeoff').length };
+  };
+  // Drive at 30 m/s; fly from the lip, land `land` m past it; optionally roll over after landing.
+  const flight = (land: number, opts: { roll?: boolean; secondJump?: boolean } = {}): Step => {
+    let z = 280;
+    return (_t, car) => {
+      z += 30 * PHYSICS_DT;
+      car.position.z = z;
+      car.speed = 30;
+      const air = z > lipS && z < lipS + land;
+      const air2 = opts.secondJump && z > lipS + land + 20 && z < lipS + land + 60;
+      car.wheelsOnGround = air || air2 ? 0 : 4;
+      car.airTime = air || air2 ? car.airTime + PHYSICS_DT : 0;
+      if (opts.roll && z > lipS + land + 3) car.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI * 0.8);
+    };
+  };
+  {
+    const r = scenario('clean 72 m landing', flight(72));
+    check(r.pr.jumpBonus && r.pr.points === 2 && Math.abs((r.pr.jumpM ?? 0) - 72) < 1.5 && r.jumpsEv.length === 1 && r.jumpsEv[0].bonus && r.takeoffs === 1, 'land on the wheels past the bonus line: +1 (plus the win), distance recorded');
+    check(r.pr.stage === 'done', 'attempt over → racer done (car held in the run-off)');
+  }
+  {
+    const r = scenario('short 45 m landing', flight(45));
+    check(!r.pr.jumpBonus && r.pr.points === 1 && Math.abs((r.pr.jumpM ?? 0) - 45) < 1.5 && !r.pr.jumpCrashed, 'short of the bonus line: no bonus, distance recorded');
+  }
+  {
+    const r = scenario('crash landing at 75 m', flight(75, { roll: true }));
+    check(!r.pr.jumpBonus && r.pr.jumpCrashed && r.pr.points === 1 && Math.abs((r.pr.jumpM ?? 0) - 75) < 1.5, 'rollover after touchdown: crash, no bonus even past the line');
+  }
+  {
+    const r = scenario('second jump ignored', flight(30, { secondJump: true }));
+    check(r.jumpsEv.length === 1 && !r.pr.jumpBonus && Math.abs((r.pr.jumpM ?? 0) - 30) < 1.5, 'one attempt per racer (a second big air does not count)');
+  }
+  {
+    const r = scenario('never takes off', (_t, car) => {
+      car.position.z += 30 * PHYSICS_DT;
+      car.speed = 30;
+    });
+    check(r.pr.jumpM === 0 && !r.pr.jumpBonus && r.jumpsEv.length === 1, 'driving past the lip without leaving the ground ends the attempt at 0 m');
+  }
+  {
+    let z = 280;
+    const r = scenario('stops before the ramp', (_t, car) => {
+      if (z < 330) z += 30 * PHYSICS_DT;
+      car.position.z = z;
+    });
+    check(r.pr.jumpM === null && r.jumpsEv.length === 0 && r.pr.stage === 'done' && r.pr.points === 1, 'bonus window runs out without an attempt: no jump, racer done');
+  }
+  {
+    let z = 280;
+    let asked = false;
+    const r = scenario('reset in mid-air', (_t, car, race) => {
+      z += 30 * PHYSICS_DT;
+      if (z > lipS + 1) {
+        car.wheelsOnGround = 0;
+        car.airTime += PHYSICS_DT;
+        if (!asked) {
+          asked = true;
+          race.requestReset('player', 0.3);
+        }
+      }
+      car.position.z = Math.min(z, lipS + 40);
+    });
+    check(r.pr.jumpCrashed && !r.pr.jumpBonus && r.jumpsEv.length === 1, 'a reset mid-jump ends the attempt as a crash');
+  }
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall race checks passed');

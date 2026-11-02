@@ -15,12 +15,12 @@ export const GRAVITY = -9.81;
  * Use `groups(member, ...collidesWith)` to build masks.
  */
 export const Group = {
-  GROUND: 1 << 0, // terrain, road, hill
+  GROUND: 1 << 0, // terrain, road, ramps
   STATIC: 1 << 1, // boulders, logs, walls, ramps
   VEHICLE: 1 << 2,
   DEBRIS: 1 << 3, // hay bales, cones (dynamic, light)
   ANIMAL: 1 << 4,
-  SENSOR: 1 << 5, // checkpoints, finish, summit
+  SENSOR: 1 << 5, // checkpoints, finish
 } as const;
 
 export function groups(member: number, filter: number): number {

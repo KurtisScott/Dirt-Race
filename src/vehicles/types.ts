@@ -118,8 +118,8 @@ export interface VehicleParams {
   climbTraction?: number;
   /**
    * Optional: engine power available on steep climbs, in W/kg (drive force ≤ mass·climbPower/speed,
-   * blended in from 14° to 20° nose-up). It sets the crawl speed up the bonus hill, so a run-up is
-   * bled off and the hill-climb stat decides how long the climb takes. Unset = no power limit.
+   * blended in from 14° to 20° nose-up). It sets the crawl speed up very steep slopes, so a run-up is
+   * bled off and the hidden climb value decides how long the climb takes. Unset = no power limit.
    */
   climbPower?: number;
   /**

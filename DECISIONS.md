@@ -285,3 +285,57 @@ The check found the hill too easy: 5 of 6 cars summited in 7–12 s of the 45 s 
 - **No leaks:** geometry is edited in place; the crack decal is the only per-car addition. The smoke test damages and then wrecks the player's car every Race Again round and checks GPU textures/geometries, bodies and scene children stay flat.
 - **HUD:** a small car icon above the speedometer, green → yellow (10 %) → orange (35 %) → red (65 %, wobbling), with the % below; it pops on each hit. **Results:** "🔧 Damage NN %" line per car (`RacerResult.damage`, optional).
 - **Not done / for others:** no repair pickups; the AI doesn't drive more carefully when damaged; damage doesn't change engine sound (an easy follow-up: lower `lpBase` / add misfire with damage).
+
+## Round 2: 5 km course, end jump, more animals (course agent), 2026-11-02
+
+### Course (SPEC round 2 item 4)
+- **5.13 km centre-line, finish line at 4.64 km** (exactly twice the old race distance), then the 0.5 km end jump. Zones: town 370 m, farm 410, mud 240, rocky hills 460, **forest trail 590**, **rocky canyon 580**, **snowy pass 510**, desert 740, river 572 (now with a 150 m **riverside run**), finish straight 170, **jump** 496. Checkpoints every ~300 m (15). Headless centre-line drives: 203–273 s; the computer driver 195–272 s, so a kid's race should land around 4–5 minutes. Time limit 8 minutes.
+- **Layout:** the first half (town → rocky) is unchanged. The forest climbs north, the canyon crosses the top of the map heading east, the snowy pass and the desert run down the east side, the desert sweeps west into the riverside run, and the river / finish / jump run north up the middle. No two legs come within 227 m of each other (checked by plotting; the valley walls never merge). The terrain grid is 996 × 2002 m (500k nodes, was 231k); chunks outside the valley walls are never built.
+- **Forest trail:** narrow (5 m half-width) dirt track, dense pines/trees right up to the verge, six fallen logs poking ~1.8 m into the road (fixed, tagged `static/'log'`, emit `obstacle:hit 'log'`), a log ramp. New forest-floor terrain layer.
+- **Rocky canyon:** the valley walls close in (17–34 m from the centre-line instead of 48–72) and rise 34 m, red sandstone layer; boulders on the road edges, a red rock ramp, and a **wooden road bridge over a 12 m-deep gorge** (a tilted cuboid deck + rail colliders; `CourseTrack` heights follow the deck so the AI's slope profile and the progress strip are right; checkpoints never land on it).
+- **Snowy pass:** the road climbs a 22 m saddle (≤ 10.4° grades; everything stays under the 14° `climbPower` threshold, steepest grade on the race route asserted < 12°), snow layer, snowy pines, snow-capped walls, cone gates. **Physics surface is `gravel`** (grip 0.7): a real `snow`/`ice` `SurfaceType` would ripple into `vehicles/` (surface speed caps), `fx/` and `audio/` tables owned by other agents mid-merge. After the merge, adding `snow: {grip ~0.55, drag 0.05, rolling 0.4}` and mapping it in `buildSurfaces` is a one-liner here.
+- **Desert:** two sand-coloured dune jumps, cacti. **River:** the river is now a polyline (rasterised into per-node `(a, b)` like the road distance field): it runs 24 m to the right of the riverside road, follows the left turn, bends across the road line where the log bridge is, and on through the ford. The Ω-loop is mirrored so the ford is on the far side from the incoming river. The water is one ribbon mesh along the polyline.
+- **More obstacles and jumps:** 6 ramps (was 2), fallen logs, canyon/snow boulders, snow cone gates, cones lining the jump run-up, a hay wall at the end of the run-off.
+- **Perf on a doubled world** (see "Perf" below): terrain chunks and prop chunks are frustum-culled per 80–160 m, so draw calls per view barely changed; triangles in view went up modestly (denser forest). Memory doubled (vertex buffers 25 → 53 MB, grid arrays 3.7 → 8 MB). `layerWeights` no longer allocates two arrays per vertex (it ran ~1.3M times). No streaming was needed; it's the obvious next step if old iPads struggle with memory: build chunk geometry lazily when the player gets within ~600 m.
+
+### End jump (SPEC round 2 item 3, replaces the bonus hill)
+- The bonus hill, summit flag, summit logic, `race:summit`, `finishAt`, `summitRadiusM`, `TrackPath.summitS` and `World.summit` are gone. New: `World.jump: JumpInfo`, `race:takeoff`, `race:jump {distanceM, bonus, crashed}`, `RacerResult.jumpM/jumpCrashed`, `RaceResults.jumpBonusM`.
+- **Shape:** finish line → 230 m straight asphalt run-up (cones and fences either side, a "BIG JUMP!" gantry) → 16 m curved ramp (circular arc to 12°, 2.0 m lip) → 140 m landing hill (8 m flat table, then it steepens to 11°, holds and rounds out; ~21 m total drop) → 110 m sand run-off with a berm and a hay wall. Landing on a matching downslope keeps touchdowns survivable at 3 s of air.
+- **Rules:** one attempt per finisher within its 45 s window. Take-off = no wheel contact near the lip; touchdown = first step with ≥ 2 wheels down; it counts if the car stays upright for 1 s. Distance = horizontal metres along the centre-line from the lip to the touchdown point. Past the gold bonus line on the wheels = +1. Driving past the lip without leaving the ground ends the attempt at 0 m; a Reset mid-air is a crash. Afterwards the race holds the car (brakes) and it stops in the run-off. An attempt already airborne when the window runs out still gets to land.
+- **Kid-readable markers:** painted white lines every 10 m across the landing zone, numbered boards on both sides (one atlas texture → one draw call), and the bonus line in thick gold with two tall fog-free gold posts, waving flags and a "+1 BONUS" banner between them. The progress strip shows a ramp wedge at the lip and a ⭐ at the bonus line.
+- **The AI** drives every difficulty flat out after the finish line (full top speed, no mistakes or easing off), so Easy's computer gets the same jump as Hard's.
+- **Tuning** (`scripts/jump-tune.ts`, real vehicle physics, full throttle on the centre-line; asserted in world-test):
+
+  | Vehicle | Lip speed | Jump (run-up) | Jump (standing start at the finish) | Air | Result |
+  | --- | --- | --- | --- | --- | --- |
+  | Sports car | 147 km/h | 125 m | 119 m | 3.2 s | bonus |
+  | Muscle car | 130 km/h | 99 m | 95 m | 2.8 s | bonus |
+  | Dune buggy | 114 km/h | 77 m | 75 m | 2.5 s | bonus |
+  | Pickup | 113 km/h | 74 m | 72 m | 2.3 s | bonus |
+  | Monster truck | 96 km/h | 53 m | 52 m | 2.0 s | short |
+  | Grandma's sedan | 94 km/h | 50 m | 47 m | 1.8 s | short |
+
+  **Bonus line 58 m** (`JUMP_BONUS_M`). Everyone lands on the wheels. Fast/light cars need ≥ ~100 km/h at the lip (≈ 90 % of a pickup's top speed), so a bad run-up (lifting, a wobble, damage slowing the car) can cost the bonus; the monster truck misses by ~5 m ("so close!"), the sedan by ~8–11 m. Iterations: 15°/2.4 m ramp gave 55–130 m (sports overshooting the landing zone); 12°/2.0 m gives the table above. Wobbly steering (`NOISE=0.35`) changes distances by < 6 m.
+- **Retuning after the 16-vehicle merge:** everything is in `world/layout.ts` (`JUMP_RAMP_DEG`, `JUMP_RAMP_HEIGHT_M`, `JUMP_BONUS_M`, `JUMP_LAND_DEG`, `JUMP_LANDING_M`); rerun `npx tsx scripts/jump-tune.ts` and update `MAKES_IT` in world-test. Note for the damage system: `vehicle:landed.impact` is the *vertical* speed (14–22 m/s here); because the landing hill slopes with the trajectory, the slope-normal impact is roughly half of that. Landing damage for the end jump should use the normal component (or be capped), otherwise every successful jump would be heavily damaging.
+
+### Animals (SPEC round 2 item 5)
+- **12 kinds:** kept deer, bear, mouse, ducks (×4), croc; added **moose** (forest, snow), **wild boar** (forest), **bull** and **cows** (×2, farm), **goats** (×2, rocky hills, canyon), **rabbits** (×2, farm, forest), **camel** (desert). The river also got a croc spot. All low-poly (merged parts, legs on hip pivots; rabbits hop): moose with palmate antlers and a droopy nose, boar with tusks and a bristle ridge, black bull with wide horns and a gold nose ring, white cows with black patches and a pink udder, goats with curved horns and a beard, rabbits with long pink-lined ears and a puff tail, a two-humped camel with a curved neck.
+- **Damaging:** bear, moose, bull, boar, croc emit `animal:bump {damaging: true, speed}` (the vehicles agent's damage system decides the cost); cows and camels are big but not on SPEC's list, so they only bump. `speed` = relative horizontal speed between the car (just after contact) and the animal's pre-contact velocity.
+- **Rarity:** 4–6 crossings per race (was 2–3), at least 300 m apart, no kind twice, at most 2 damaging ones. 22 zone-matched spots.
+- **Fix:** a velocity-driven animal touching a car acted like a wall (we re-set its velocity every step), so a car pushing a bear slowed from 68 to 7 km/h. Animals within 3 m of a car are now left to physics for a moment; the car keeps its speed (world-test drives into every kind).
+- Audio maps animal voices by substring, so the new kinds get the generic "boing" until the audio module adds voices (moo, bleat, grunt…).
+
+### Perf (before → after)
+
+Measured with `npx tsx scripts/course-stats.ts` (Node, best of 3) and `node scripts/world-shots.mjs` (headless Chrome + SwiftShader, Medium quality incl. the shadow pass, 1112×834):
+
+| | Before (2.49 km) | After (5.13 km) |
+| --- | --- | --- |
+| Course build (Node) | 1.22 s (data 0.40 + meshes/colliders 0.82) | 2.45 s (1.02 + 1.43) |
+| `[world] race course built` in Chrome (meshes/colliders half) | 2.8 s | 2.3–3.7 s (machine load varied) |
+| Load → ready (headless SwiftShader) | not measured | 11.5–15 s |
+| Terrain grid | 231k nodes (618 × 1486 m), 3.7 MB | 500k nodes (996 × 2002 m), 8.0 MB |
+| Whole scene | 289 meshes, 388k tris (terrain 214k), 25 MB vertex/index buffers | 596 meshes, 783k tris (terrain 418k), 53 MB |
+| Colliders | 625 | 1098 |
+
+Draw calls / triangles in view per zone (Medium): before — town 107/122k, farm 106/145k, mud 124/184k, rocky 79/98k, desert 59/53k, river 115/152k, finish 104/131k, hill 108/143k (max 124). After — town 101/122k, farm 101/146k, mud 105/169k, rocky 86/143k, **forest 81/145k, canyon 85/116k, gorge 89/127k, snow 93/147k**, desert 98/122k, **riverside 122/199k**, river 120/167k, finish 139/190k, **run-up 129/175k, jump mid-air 147/193k, landing zone 137/180k** (max 147; animal close-ups 75–127). Per-view cost is about the same because everything is culled per chunk; the end-jump area is the busiest view (markers, gate, cones, hay, plus both straights in view) and sits just under the ~150 guidance. If it's too much on the A10X: drop the sign posts' shadows or merge the gate into the props chunk. **Not measured on a real iPad**; on an A12 expect the course build to take roughly 5–9 s behind the title screen (about twice the old estimate).

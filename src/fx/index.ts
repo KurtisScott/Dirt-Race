@@ -14,7 +14,8 @@ export { ChaseCamera } from './chaseCamera';
 export interface FxWorld {
   heightAt(x: number, z: number): number;
   track: { finishS: number; pointAt(s: number, t?: THREE.Vector3): THREE.Vector3; tangentAt(s: number, t?: THREE.Vector3): THREE.Vector3; halfWidthAt(s: number): number };
-  summit: THREE.Vector3;
+  /** The end jump: effects fire at its bonus line (gold gate). */
+  jump: { bonusLine: THREE.Vector3 };
 }
 
 /** Pool sizes (fixed GPU buffers); the live caps scale with `quality.preset.detail`. */
@@ -80,8 +81,8 @@ function makeBlobTexture(): THREE.DataTexture {
 /**
  * Visual effects driven purely by read-only vehicle state + bus events (no physics writes):
  * - one point-sprite system (dust on dirt/gravel/sand, mud spray, water splashes, exhaust, tyre smoke,
- *   landing puffs, summit sparkles),
- * - one instanced mesh of tumbling pieces (hay strands, finish confetti, golden summit flakes),
+ *   landing puffs, jump-bonus sparkles),
+ * - one instanced mesh of tumbling pieces (hay strands, finish confetti, golden jump-bonus flakes),
  * - one ring-buffer mesh of skid marks on asphalt.
  * Three draw calls at most, each hidden when empty. Particle budget = pool × quality detail.
  */
@@ -119,14 +120,16 @@ export class Effects implements System {
       events.on('obstacle:hit', (e) => this.onObstacle(e.kind, e.racer, e.x, e.y, e.z)),
       events.on('animal:bump', (e) => this.puff(e.x, this.groundY(e.x, e.z) + 0.3, e.z, 0xc9b28a, 8, 1.2)),
       events.on('race:finish', ({ racer, winner }) => this.onFinish(racer, winner)),
-      events.on('race:summit', ({ racer }) => this.onSummit(racer)),
+      events.on('race:jump', ({ racer, bonus }) => {
+        if (bonus) this.onJumpBonus(racer);
+      }),
       events.on('phase:changed', ({ to }) => {
         if (to === 'spin' || to === 'title') this.clear();
       }),
     );
   }
 
-  /** The course, for ground height (settling debris) and the finish/summit positions. */
+  /** The course, for ground height (settling debris) and the finish / jump bonus-gate positions. */
   setWorld(world: FxWorld): void {
     this.world = world;
   }
@@ -562,13 +565,13 @@ export class Effects implements System {
     }
   }
 
-  private onSummit(racer: RacerId): void {
+  /** Jump bonus earned: golden flakes burst from the bonus gate's banner, plus a golden fountain round the car. */
+  private onJumpBonus(racer: RacerId): void {
     const w = this.world;
     if (!w) return;
     const r = Math.random;
-    const top = w.summit;
+    const top = w.jump.bonusLine;
     const v = this.vehicle(racer);
-    // Golden flakes from the flag top, a fountain of sparkles around the pole, and a ring of puffs at the car.
     const flakes = (scale: number): void => {
       const n = Math.round(70 * scale * (0.5 + this.detail * 0.5));
       for (let k = 0; k < n; k++) {
@@ -577,7 +580,7 @@ export class Effects implements System {
         const sp = 2 + r() * 5;
         this.debris.spawn({
           x: top.x,
-          y: top.y + 13.5,
+          y: top.y + 7.5,
           z: top.z,
           vx: Math.cos(a) * sp,
           vy: 3 + r() * 6,
@@ -597,7 +600,7 @@ export class Effects implements System {
         const a = r() * Math.PI * 2;
         this.particles.spawn({
           x: top.x + Math.cos(a) * 0.5,
-          y: top.y + 1 + r() * 13,
+          y: top.y + 1 + r() * 8,
           z: top.z + Math.sin(a) * 0.5,
           vx: Math.cos(a) * (1 + r() * 2),
           vy: 1 + r() * 2,

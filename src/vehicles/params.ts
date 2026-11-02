@@ -20,7 +20,7 @@ const byStat = (table: readonly number[], stat: number): number => {
  *  - CLIMB_POWER (W/kg): drive force ≤ mass·P/speed on slopes over 14°. Sets the crawl speed on the steep
  *    top (P / ~6.5 m/s²: about 2.8 m/s for the sports car up to 5.5 m/s for the monster), so a run-up is
  *    bled off on the lower slope and the stat decides how long the climb takes.
- * Measured times are in DECISIONS.md ("Bonus hill retune"); world-test asserts the ordering.
+ * Measured times are in DECISIONS.md ("Bonus hill retune"); physics-test (personality) asserts the ordering on the same profile.
  */
 export const CLIMB_TRACTION = [0.62, 0.835, 0.875, 0.96, 1.05] as const;
 export const CLIMB_POWER = [14, 18, 20, 28, 36] as const;

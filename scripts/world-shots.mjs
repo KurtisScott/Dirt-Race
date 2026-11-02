@@ -1,7 +1,10 @@
-// Screenshots of every course zone from the BUILT game (headless Chrome, software GL).
+// Screenshots of every course zone, the end jump and every animal from the BUILT game (headless Chrome, software GL).
 // Teleports the player's car along the course during a race and lets the chase camera settle.
-// Usage: npm run build && node scripts/world-shots.mjs   (QUALITY=medium default; PORT env var)
-// Writes screenshots/world-<zone>.png and prints draw calls / triangles per shot.
+// Usage: npm run build && node scripts/world-shots.mjs
+//   QUALITY=low|medium|high (default medium), PREFIX=world- (file prefix), PORT
+//   ZONES=town,farm,…  (default: every zone shot)   FX=1 (with ZONES: also the effects shots)
+//   JUMP=0 / ANIMALS=0 to skip those groups (with ZONES set, JUMP=1 / ANIMALS=1 add them), ANIMAL_KINDS=moose,boar to limit
+// Writes screenshots/<PREFIX><name>.png and prints draw calls / triangles per shot.
 import { chromium } from 'playwright-core';
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -13,6 +16,7 @@ const root = fileURLToPath(new URL('../dist/', import.meta.url));
 const shots = fileURLToPath(new URL('../screenshots/', import.meta.url));
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.json': 'application/json' };
 const PORT = Number(process.env.PORT ?? 4183);
+const PREFIX = process.env.PREFIX ?? 'world-';
 const server = createServer(async (req, res) => {
   const url = decodeURIComponent((req.url ?? '/').split('?')[0]);
   if (!url.startsWith('/dirt-race/')) return res.writeHead(302, { location: '/dirt-race/' }).end();
@@ -43,8 +47,10 @@ page.on('console', (m) => {
 });
 page.on('pageerror', (e) => errors.push(String(e)));
 
+const t0 = Date.now();
 await page.goto(`http://localhost:${PORT}/dirt-race/${process.env.LEVEL ? `?level=${process.env.LEVEL}` : ''}`, { waitUntil: 'load' });
-await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 60000 });
+await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 120000 });
+console.log(`  load → ready ${((Date.now() - t0) / 1000).toFixed(1)} s (headless swiftshader)`);
 await page.click('[data-tap="start"]');
 await page.waitForTimeout(1500);
 await page.click('[data-tap="ready"]');
@@ -52,71 +58,61 @@ await page.waitForSelector('.vspin-go.ready', { timeout: 60000 });
 await page.click('[data-tap="spin-go"]', { force: true });
 await page.waitForFunction(() => window.__dirt.race.phase === 'racing', null, { timeout: 90000, polling: 100 });
 await mkdir(shots, { recursive: true });
+// Animals would wander into the zone shots: off (the animal shots stage them by hand).
+await page.evaluate(() => (window.__dirt.world.animalsEnabled = false));
 
 const simWait = async (seconds) => {
   const start = await page.evaluate(() => window.__dirt.loop.simTime);
-  await page.waitForFunction((t) => window.__dirt.loop.simTime >= t, start + seconds, { timeout: 120000, polling: 100 });
+  await page.waitForFunction((t) => window.__dirt.loop.simTime >= t, start + seconds, { timeout: 180000, polling: 100 });
 };
-
-// [name, s offset into zone (m) or absolute, lateral, extra]
-const zones = process.env.ZONES?.split(',') ?? ['town', 'farm', 'mud', 'rocky', 'desert', 'river', 'finish', 'hill', 'bridge', 'animal'];
 const stats = [];
+const snap = async (name) => {
+  await page.waitForTimeout(300);
+  const info = await page.evaluate(() => {
+    const d = window.__dirt;
+    const p = d.player;
+    return { calls: d.renderer.renderer.info.render.calls, tris: d.renderer.renderer.info.render.triangles, surf: p.surface, speed: p.speed };
+  });
+  await page.screenshot({ path: join(shots, `${PREFIX}${name}.png`) });
+  stats.push({ name, ...info });
+  console.log(`  ${name.padEnd(14)} drawCalls=${String(info.calls).padStart(3)} tris=${(info.tris / 1000).toFixed(0).padStart(4)}k surface=${info.surf} speed=${(info.speed * 3.6).toFixed(0)} km/h`);
+};
+const override = (fn, arg) => page.evaluate(fn, arg);
+/** Start a fresh race (the zone shots near the finish line finish the player's race and start its jump window). */
+const freshRace = async () => {
+  await page.evaluate(() => {
+    window.__dirt.camera.override = null;
+    window.__dirt.race.startCountdown();
+  });
+  await page.waitForFunction(() => window.__dirt.race.phase === 'racing', null, { timeout: 60000, polling: 100 });
+  await simWait(1.2); // let the big "GO!" fade
+};
+const clearOverride = () => page.evaluate(() => (window.__dirt.camera.override = null));
+
+// ---- zones: [name, where] — where is evaluated in the page to an s (m) along the track
+const ZONE_SHOTS = {
+  town: (w) => w.zones.find((z) => z.id === 'town').startS + 20,
+  farm: (w) => w.zones.find((z) => z.id === 'farm').startS + 55,
+  mud: (w) => w.zones.find((z) => z.id === 'mud').startS + 40,
+  rocky: (w) => (w.data.ramps[0] ? w.track.project({ x: w.data.ramps[0].x, y: 0, z: w.data.ramps[0].z }).s - 35 : w.zones.find((z) => z.id === 'rocky').startS + 40),
+  forest: (w) => w.zones.find((z) => z.id === 'forest').startS + 120,
+  canyon: (w) => w.zones.find((z) => z.id === 'canyon').startS + 160,
+  gorge: (w) => w.data.gorge.s0 - 30,
+  snow: (w) => w.zones.find((z) => z.id === 'snow').startS + 80,
+  desert: (w) => w.zones.find((z) => z.id === 'desert').startS + 200,
+  riverside: (w) => w.data.line.tagS.riverside + 40,
+  river: (w) => w.shortcuts[0].startS + 18,
+  finish: (w) => w.data.finishS - 70,
+  runup: (w) => w.data.finishS + 40,
+};
+const zones = process.env.ZONES?.split(',') ?? [...Object.keys(ZONE_SHOTS), 'bridge'];
 for (const name of zones) {
-  const where = await page.evaluate((name) => {
-    const w = window.__dirt.world;
-    const z = w.zones.find((zz) => zz.id === name);
-    const d = w.data;
-    let s;
-    let back = 0;
-    if (name === 'hill') s = d.finishS - 40;
-    else if (name === 'finish') s = d.finishS - 70;
-    else if (name === 'river') s = w.shortcuts[0].startS + 18;
-    else if (name === 'bridge') s = w.shortcuts[0].startS - 2;
-    else if (name === 'animal') s = 0;
-    else if (name === 'mud') s = z.startS + 40;
-    else if (name === 'rocky') s = d.ramps[0] ? w.track.project({ x: d.ramps[0].x, y: 0, z: d.ramps[0].z }).s - 35 : z.startS + 40;
-    else if (name === 'farm') s = z.startS + 55;
-    else s = (z ? z.startS : 0) + 20 + back;
-    return { s };
-  }, name);
-  if (name === 'animal') {
-    // Stage a deer crossing right in front of the car on the farm road.
-    await page.evaluate(() => {
-      const w = window.__dirt.world;
-      const d = w.data;
-      const z = w.zones.find((zz) => zz.id === 'farm');
-      const s = z.startS + 150;
-      const p = window.__dirt.player;
-      p.reset(d.spawnAt(s - 26, 0));
-      const sys = w.animalSys;
-      const plan = { spot: { kind: 'deer', zone: 'farm', s }, side: 1, done: false, animals: sys.byKind.get('deer') };
-      sys.plan = [plan];
-      sys.stage(plan);
-      for (const a of plan.animals) {
-        a.state = 'crossing';
-        a.stateT = 0;
-      }
-      window.__dirt.cameraSnap?.();
-    });
-    await simWait(0.9);
-  } else {
-    await page.evaluate(({ s, name }) => {
-      const w = window.__dirt.world;
-      const p = window.__dirt.player;
-      // Keep the computer off-screen behind us.
-      p.reset(w.data.spawnAt(s, name === 'bridge' ? 0 : -1.5));
-    }, where);
-    await page.keyboard.down('ArrowUp');
-    await simWait(name === 'hill' ? 3.2 : name === 'mud' ? 2.5 : 1.6);
-    await page.keyboard.up('ArrowUp');
-  }
   if (name === 'bridge') {
-    // Look at the bridge from the side: override the camera briefly.
-    await page.evaluate(() => {
+    // The log bridge from the side.
+    await override(() => {
       const w = window.__dirt.world;
       const b = w.data.bridge;
-      const r = w.data.river;
-      const cam = window.__dirt.renderer.camera;
+      window.__dirt.player.reset(w.data.spawnAt(w.shortcuts[0].startS - 2, 0));
       const fx = Math.sin(b.yaw);
       const fz = Math.cos(b.yaw);
       window.__dirt.camera.override = (c) => {
@@ -125,25 +121,169 @@ for (const name of zones) {
         c.fov = 60;
         c.updateProjectionMatrix();
       };
-      void r;
-      void cam;
     });
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(500);
+    await snap('bridge');
+    await clearOverride();
+    continue;
   }
-  await page.waitForTimeout(300);
-  const info = await page.evaluate(() => {
-    const d = window.__dirt;
-    const p = d.player;
-    return { calls: d.renderer.renderer.info.render.calls, tris: d.renderer.renderer.info.render.triangles, surf: p.surface, y: p.position.y, speed: p.speed };
+  const fn = ZONE_SHOTS[name];
+  if (!fn) continue;
+  const s = await page.evaluate(`(${fn.toString()})(window.__dirt.world)`);
+  await page.evaluate(({ s, name }) => {
+    const w = window.__dirt.world;
+    window.__dirt.player.reset(w.data.spawnAt(s, name === 'gorge' ? 0 : -1.5));
+  }, { s, name });
+  await page.keyboard.down('ArrowUp');
+  await simWait(name === 'mud' ? 2.5 : name === 'gorge' ? 2.2 : 1.6);
+  await page.keyboard.up('ArrowUp');
+  await snap(name);
+}
+if (zones.includes('gorge') || !process.env.ZONES) {
+  // The gorge bridge from the side, down in the canyon.
+  await override(() => {
+    const w = window.__dirt.world;
+    const c = w.data;
+    const g = c.gorge;
+    const m = c.centre(g.s);
+    const t = c.dirAt(g.s);
+    const y = c.gorgeDeckY(g.s);
+    window.__dirt.player.reset(c.spawnAt(g.s0 - 6, 0));
+    window.__dirt.camera.override = (cam) => {
+      cam.position.set(m.x - t.y * 13 - t.x * 8, y - 4, m.y + t.x * 13 - t.y * 8);
+      cam.lookAt(m.x, y - 3, m.y);
+      cam.fov = 70;
+      cam.updateProjectionMatrix();
+    };
   });
-  await page.screenshot({ path: join(shots, `world-${name}.png`) });
-  if (name === 'bridge') await page.evaluate(() => (window.__dirt.camera.override = null));
-  stats.push({ name, ...info });
-  console.log(`  ${name.padEnd(7)} drawCalls=${info.calls} tris=${(info.tris / 1000).toFixed(0)}k surface=${info.surf} speed=${(info.speed * 3.6).toFixed(0)} km/h`);
+  await page.waitForTimeout(500);
+  await snap('gorge-bridge');
+  await clearOverride();
 }
 
-// ---- effects shots: water splash at the ford, hay scatter, finish confetti, summit celebration.
+// ---- the end jump: ramp, take-off, mid-air, landing zone markers, bonus gate
+if (process.env.JUMP !== '0' && (!process.env.ZONES || process.env.JUMP)) {
+  await freshRace();
+  // Ramp from the side.
+  await override(() => {
+    const w = window.__dirt.world;
+    const c = w.data;
+    const j = c.jump;
+    const s = j.footS + j.rampLen / 2;
+    const m = c.centre(s);
+    const t = c.dirAt(s);
+    const y = w.track.pointAt(s).y;
+    window.__dirt.player.reset(c.spawnAt(j.footS - 30, 0));
+    window.__dirt.camera.override = (cam) => {
+      cam.position.set(m.x - t.y * 22 - t.x * 14, y + 5, m.y + t.x * 22 - t.y * 14);
+      cam.lookAt(m.x + t.x * 20, y, m.y + t.y * 20);
+      cam.fov = 60;
+      cam.updateProjectionMatrix();
+    };
+  });
+  await page.waitForTimeout(500);
+  await snap('jump-ramp');
+  await clearOverride();
+  // A real attempt: start on the finish straight, full gas, shoot mid-air and after landing (chase camera).
+  await page.evaluate(() => {
+    const w = window.__dirt.world;
+    window.__dirt.player.reset(w.data.spawnAt(w.data.finishS - 150, 0));
+    window.__dirt.camera.snap?.();
+  });
+  await page.keyboard.down('ArrowUp');
+  await page.waitForFunction(
+    () => {
+      const d = window.__dirt;
+      const j = d.world.jump;
+      const s = d.race.progress.player.s;
+      return s > j.lipS + 8 && d.player.wheelsOnGround === 0;
+    },
+    null,
+    { timeout: 240000, polling: 50 },
+  );
+  await page.waitForFunction((t) => window.__dirt.loop.simTime >= t, (await page.evaluate(() => window.__dirt.loop.simTime)) + 0.7, { timeout: 60000, polling: 20 });
+  await snap('jump-air');
+  await page.waitForFunction(() => window.__dirt.race.progress.player.jump === 'done', null, { timeout: 120000, polling: 100 });
+  await page.keyboard.up('ArrowUp');
+  const jr = await page.evaluate(() => ({ m: window.__dirt.race.progress.player.jumpM, bonus: window.__dirt.race.progress.player.jumpBonus, crashed: window.__dirt.race.progress.player.jumpCrashed, kind: window.__dirt.player.spec.kind }));
+  console.log(`  jump attempt (${jr.kind}): ${jr.m} m, bonus ${jr.bonus}, crashed ${jr.crashed}`);
+  await simWait(0.4);
+  await snap('jump-landed');
+  // Landing zone: markers and the bonus gate, from the top of the landing hill.
+  await override(() => {
+    const w = window.__dirt.world;
+    const c = w.data;
+    const j = c.jump;
+    const m = c.centre(j.lipS + 2);
+    const t = c.dirAt(j.lipS + 2);
+    const y = w.track.pointAt(j.lipS).y + j.rampHeight;
+    const b = c.centre(j.lipS + 55);
+    window.__dirt.camera.override = (cam) => {
+      cam.position.set(m.x - t.y * 9, y + 4.5, m.y + t.x * 9);
+      cam.lookAt(b.x, w.track.pointAt(j.lipS + 55).y, b.y);
+      cam.fov = 62;
+      cam.updateProjectionMatrix();
+    };
+  });
+  await page.waitForTimeout(500);
+  await snap('jump-landing');
+  // Bonus celebration at the gate.
+  await override(() => {
+    const d = window.__dirt;
+    const w = d.world;
+    const j = w.jump;
+    d.camera.override = null;
+    d.player.reset(w.data.spawnAt(j.bonusS + 4, 0));
+    d.camera.snap?.();
+    d.events.emit('race:jump', { racer: 'player', distanceM: 74, bonus: true, crashed: false });
+  });
+  await simWait(0.8);
+  await snap('jump-bonus');
+}
+
+// ---- animals: each kind standing on the road in its zone, seen from the side
+if (process.env.ANIMALS !== '0' && (!process.env.ZONES || process.env.ANIMALS)) {
+  await freshRace();
+  const kinds = process.env.ANIMAL_KINDS?.split(',') ?? ['moose', 'boar', 'bull', 'cow', 'goat', 'rabbit', 'camel', 'deer', 'bear', 'croc', 'duck', 'mouse'];
+  for (const kind of kinds) {
+    await override((kind) => {
+      const d = window.__dirt;
+      const w = d.world;
+      const c = w.data;
+      const sys = w.animalSys;
+      const spot = c.animalSpots.find((a) => a.kind === kind);
+      const s = spot.s;
+      d.player.reset(c.spawnAt(s - 20, -2));
+      const plan = { spot: { kind, zone: spot.zone, s }, side: 1, done: true, animals: sys.byKind.get(kind) };
+      sys.plan = [plan];
+      sys.stage(plan);
+      plan.animals.forEach((a, i) => {
+        const p = c.spawnAt(s + i * 1.6, i * 1.4 - 0.5);
+        a.body.setTranslation({ x: p.x, y: p.y + a.lift + 0.05, z: p.z }, true);
+        a.state = 'waiting';
+        a.heading = p.yaw + Math.PI / 2 + 0.5;
+      });
+      const big = { moose: 1.6, bull: 1.4, cow: 1.4, camel: 1.8, bear: 1.2, croc: 1.1, deer: 1.4, boar: 1, goat: 1, rabbit: 0.7, duck: 0.7, mouse: 0.6 }[kind] ?? 1;
+      const m = c.centre(s);
+      const t = c.dirAt(s);
+      const y = w.track.pointAt(s).y;
+      d.camera.override = (cam) => {
+        cam.position.set(m.x - t.y * 4.2 * big - t.x * 3 * big, y + 1.4 * big, m.y + t.x * 4.2 * big - t.y * 3 * big);
+        cam.lookAt(m.x + t.x * 0.8, y + 0.8 * big, m.y + t.y * 0.8);
+        cam.fov = 55;
+        cam.updateProjectionMatrix();
+      };
+    }, kind);
+    await simWait(0.5);
+    await snap(`animal-${kind}`);
+    await page.evaluate(() => window.__dirt.world.resetDynamic());
+    await clearOverride();
+  }
+}
+
+// ---- effects shots: water splash at the ford, hay scatter, finish confetti.
 if (!process.env.ZONES || process.env.FX) {
+  await freshRace();
   const fxShot = async (name, setup, wait) => {
     await page.evaluate(setup);
     if (wait) await simWait(wait);
@@ -166,7 +306,6 @@ if (!process.env.ZONES || process.env.FX) {
   await page.keyboard.down('ArrowUp');
   await fxShot('splash', () => {}, 1.9);
   await page.keyboard.up('ArrowUp');
-  // Hay scatter + landing puff on the farm road.
   await fxShot(
     'hay',
     () => {
@@ -179,7 +318,6 @@ if (!process.env.ZONES || process.env.FX) {
     },
     0.35,
   );
-  // Confetti at the finish gantry (camera looks at the gantry from the road).
   await fxShot(
     'confetti',
     () => {
@@ -199,41 +337,30 @@ if (!process.env.ZONES || process.env.FX) {
     },
     1.0,
   );
-  await page.evaluate(() => (window.__dirt.camera.override = null));
-  await fxShot(
-    'summit',
-    () => {
-      const d = window.__dirt;
-      const w = d.world;
-      const sm = w.summit;
-      void sm;
-      d.player.reset(w.data.spawnAt(w.track.summitS - 10, 0));
-      d.camera.override = null;
-      d.camera.snap();
-      d.events.emit('race:summit', { racer: 'player' });
-    },
-    0.7,
-  );
-  await page.evaluate(() => (window.__dirt.camera.override = null));
+  await clearOverride();
 }
 
-// Overview from high above the course, looking at the hill.
-await page.evaluate(() => {
-  const w = window.__dirt.world;
-  const sm = w.summit;
-  window.__dirt.camera.override = (c) => {
-    c.position.set(sm.x - 160, sm.y + 70, sm.z - 260);
-    c.lookAt(sm.x, sm.y - 20, sm.z);
-    c.fov = 55;
-    c.updateProjectionMatrix();
-  };
-});
-await page.waitForTimeout(500);
-await page.screenshot({ path: join(shots, 'world-overview.png') });
+// Overview from high above the course.
+if (!process.env.ZONES) {
+  await page.evaluate(() => {
+    const w = window.__dirt.world;
+    const j = w.jump.lip;
+    window.__dirt.camera.override = (c) => {
+      c.position.set(j.x + 260, j.y + 260, j.z - 420);
+      c.lookAt(j.x - 80, j.y - 40, j.z + 60);
+      c.fov = 60;
+      c.far = 4000;
+      c.updateProjectionMatrix();
+    };
+  });
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(shots, `${PREFIX}overview.png`) });
+}
 
 const real = errors.filter((e) => !/favicon/.test(e));
 console.log(real.length ? `errors: ${real.join(' | ')}` : '  no console errors');
-const max = Math.max(...stats.map((s) => s.calls));
+const zoneStats = stats.filter((s) => !s.name.startsWith('animal-'));
+const max = Math.max(...zoneStats.map((s) => s.calls));
 console.log(`  max draw calls ${max} (quality ${QUALITY})`);
 await browser.close();
 server.close();
