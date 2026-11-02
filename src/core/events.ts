@@ -36,8 +36,12 @@ export interface GameEvents {
 
   // ---- vehicles (emitted by src/vehicles) ----
   'vehicle:reset': { racer: RacerId };
-  /** Hard landing after airtime; impact = downward speed in m/s at touchdown. */
-  'vehicle:landed': { racer: RacerId; impact: number };
+  /**
+   * Landing after airtime. `impact` = speed into the ground along the ground normal at touchdown (m/s),
+   * so a jump landing on a matching downslope is soft; `vertical` = raw downward speed (m/s);
+   * `misalignDeg` = angle between the car's up axis and the ground normal (nose-dives are large).
+   */
+  'vehicle:landed': { racer: RacerId; impact: number; vertical?: number; misalignDeg?: number };
   'vehicle:collision': { racer: RacerId; other: 'vehicle' | 'obstacle' | 'animal' | 'world'; impulse: number };
   'vehicle:flipped': { racer: RacerId };
   'vehicle:surface': { racer: RacerId; surface: SurfaceType };

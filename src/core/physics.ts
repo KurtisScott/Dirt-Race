@@ -29,7 +29,7 @@ export function groups(member: number, filter: number): number {
 
 /** What a collider represents. Attach via `physics.tag(collider, tag)` so contact handlers can identify it. */
 export type ColliderTag =
-  | { kind: 'ground'; surface?: SurfaceType }
+  | { kind: 'ground'; surface?: SurfaceType; /** A jump ramp (vehicles add their launch pop when leaving it). */ ramp?: boolean }
   | { kind: 'static'; name: string }
   | { kind: 'debris'; name: string }
   | { kind: 'animal'; name: string }

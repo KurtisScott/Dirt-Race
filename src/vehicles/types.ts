@@ -128,10 +128,17 @@ export interface VehicleParams {
    */
   wheelRadiusRear?: number;
   /**
-   * Hard-landing tolerance: downward speed (m/s) at touchdown below which a landing does no damage.
+   * Hard-landing tolerance: speed into the ground (m/s, along the ground normal) at touchdown below which a
+   * landing does no damage.
    * From the jump stat (see params.ts). Optional so older param overrides stay valid; default 9.
    */
   landingTolerance?: number;
+  /**
+   * Launch pop (m/s): extra upward speed when the wheels leave a ramp at speed (suspension rebound / a
+   * driver who "pops" the jump). From the jump stat, so Jump 4–5 cars fly further than Jump 2 cars at the
+   * same lip speed. Optional, default 0.
+   */
+  launchPop?: number;
   /** Damage multiplier (spec.toughness). Optional, default 1. */
   damageScale?: number;
   /** Roll-stability assist strength (Nm per rad of excess roll). Sedan is very high. */

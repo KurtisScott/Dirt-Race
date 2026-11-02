@@ -41,7 +41,7 @@ const AERO = 0.0005;
  * Fraction of top speed lost on each surface by a car with off-road stat 1 (scaled by 1 − offroad,
  * so off-road 5 loses nothing). The sports car tops out ~45 km/h in mud; the monster truck is unaffected.
  */
-const SURFACE_SPEED_PENALTY: Record<SurfaceType, number> = { asphalt: 0, dirt: 0.12, gravel: 0.18, mud: 0.7, sand: 0.5, water: 0.4 };
+const SURFACE_SPEED_PENALTY: Record<SurfaceType, number> = { asphalt: 0, dirt: 0.12, gravel: 0.18, mud: 0.7, sand: 0.5, water: 0.4, snow: 0.2 };
 
 // Scratch objects (no per-frame allocation).
 const _q = new THREE.Quaternion();
@@ -52,6 +52,7 @@ const _up = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _n = new THREE.Vector3();
 const _rel = new THREE.Vector3();
+const _gn = new THREE.Vector3();
 
 /** Live vehicles by collider handle, so a contact handler can read the other car's pre-step velocity and mass. */
 const BY_COLLIDER = new Map<number, RaycastVehicle>();
@@ -99,6 +100,14 @@ class RaycastVehicle implements Vehicle {
   private reversing = false;
   private flippedTime = 0;
   private minAirVy = 0;
+  /** Chassis velocity on the last fully airborne step (for slope-adjusted landing impact). */
+  private readonly airVel = new THREE.Vector3();
+  /** This flight's landing was already scored (the body hit the ground before the wheels). */
+  private landingScored = false;
+  /** No more animal damage until this sim time (see DAMAGE.animalCooldownS). */
+  private animalHitUntil = 0;
+  /** Sim time a wheel last touched a jump ramp (for the launch pop). */
+  private rampT = -1;
   private prevWheelRot = [0, 0, 0, 0];
   private currWheelRot = [0, 0, 0, 0];
   private prevSusp = [0, 0, 0, 0];
@@ -179,6 +188,9 @@ class RaycastVehicle implements Vehicle {
     this.offContact = o.physics.onContactForce((e) => this.onContactForce(e));
     this.offAnimal = events.on('animal:bump', (e) => {
       if (e.racer !== this.racer) return;
+      // One damaging bump per encounter: an animal pinned against the car can't keep denting it.
+      if (e.damaging && this.simTime < this.animalHitUntil) return;
+      if (e.damaging) this.animalHitUntil = this.simTime + DAMAGE.animalCooldownS;
       const amount = animalDamage(e.speed ?? Math.abs(this.speed), !!e.damaging, this.params.damageScale ?? 1);
       // Direction: from the car towards the animal (usually the nose).
       const dir = this.toLocalDir(_n.set(e.x - this.position.x, 0, e.z - this.position.z));
@@ -412,13 +424,33 @@ class RaycastVehicle implements Vehicle {
       approach = -approach;
       _n.negate(); // now points from this car towards what it hit
     }
-    // Ground under/over the car (scraping, landing, rolling onto the roof) isn't a wall hit; landings are scored separately.
-    if (tag?.kind === 'ground' && Math.abs(_n.y) > 0.6) return;
+    // Ground under/over the car (scraping, landing, rolling onto the roof) isn't a wall hit; landings are scored
+    // separately — except when the BODY hits the ground first out of the air (a nose-dive / side or roof landing):
+    // that is scored here as a landing, once per flight, with the attitude mismatch making it worse.
+    // Steep ground (a canyon wall / valley bank, |n.y| ≤ 0.8 ≈ slopes over 37°) hit by the body is a wall hit.
+    const airborneBody = tag?.kind === 'ground' && this.wheelsOnGround === 0 && this.airTime > 0.25 && _n.y < -0.3;
+    if (tag?.kind === 'ground' && (Math.abs(_n.y) > 0.8 || airborneBody)) {
+      if (airborneBody && !this.landingScored) {
+        this.landingScored = true;
+        const r = this.body.rotation();
+        _q.set(r.x, r.y, r.z, r.w);
+        _gn.set(0, 1, 0).applyQuaternion(_q); // car up
+        const misalignDeg = Math.acos(clamp(-_gn.dot(_n), -1, 1)) * 57.3; // vs ground normal (= −_n)
+        const ld = landingDamage(approach, this.params.landingTolerance ?? 9, this.params.damageScale ?? 1, misalignDeg);
+        if ((globalThis as { __dmgLog?: boolean }).__dmgLog) console.log(`[body-landing] ${this.spec.kind} approach ${approach.toFixed(1)} misalign ${misalignDeg.toFixed(0)}° → ${ld.toFixed(1)}%`);
+        if (ld > 0) {
+          events.emit('vehicle:collision', { racer: this.racer, other: 'world', impulse: approach * this.params.mass * 0.5 });
+          this.applyHit(ld, this.toLocalDir(_n), 'landing');
+        }
+      }
+      return;
+    }
     if (approach < DAMAGE.impactMin * 0.6) return;
     this.hitCooldown.set(other, this.simTime + DAMAGE.cooldownS);
     const p = this.params;
     const scale = p.damageScale ?? 1;
     const amount = otherCar ? vehicleImpactDamage(approach, p.mass, otherCar.params.mass, scale) : impactDamage(approach, scale);
+    if ((globalThis as { __dmgLog?: boolean }).__dmgLog) console.log(`[hit] ${this.spec.kind} ${JSON.stringify(tag)} approach ${approach.toFixed(1)} n=(${_n.x.toFixed(2)},${_n.y.toFixed(2)},${_n.z.toFixed(2)}) at (${this.position.x.toFixed(0)},${this.position.z.toFixed(0)}) → ${amount.toFixed(1)}%`);
     // Crash / car-bump sounds (audio already listens; impulse ≈ N·s).
     events.emit('vehicle:collision', { racer: this.racer, other: otherCar ? 'vehicle' : tag?.kind === 'static' ? 'obstacle' : 'world', impulse: approach * p.mass * 0.5 });
     this.applyHit(amount, this.toLocalDir(_n), otherCar ? 'vehicle' : tag?.kind === 'ground' ? 'wall' : 'obstacle');
@@ -514,6 +546,7 @@ class RaycastVehicle implements Vehicle {
         const g = ctrl.wheelGroundObject(i);
         const tag = g ? this.physics.getTag(g.handle) : undefined;
         w.surface = tag?.kind === 'ground' && tag.surface ? tag.surface : this.surfaces.surfaceAt(w.point.x, w.point.z);
+        if (tag?.kind === 'ground' && tag.ramp) this.rampT = this.simTime;
         const side = Math.abs(ctrl.wheelSideImpulse(i) ?? 0);
         const fwdImp = Math.abs(ctrl.wheelForwardImpulse(i) ?? 0);
         const load = Math.max(1, (ctrl.wheelSuspensionForce(i) ?? 0) * dt);
@@ -523,17 +556,37 @@ class RaycastVehicle implements Vehicle {
       }
     }
 
-    // Landing detection
+    // Landing detection. What hurts is the speed INTO the ground (along the ground normal), not the raw
+    // vertical speed: a jump landing on a matching downslope is soft, a flat landing or a nose-dive is not.
     if (onGround > 0 && this.wheelsOnGround === 0 && this.airTime > 0.25) {
-      const impact = -this.minAirVy;
-      if (impact > 3) events.emit('vehicle:landed', { racer: this.racer, impact });
-      // Hard landing: damage above the car's tolerance (jump stat). Usually nose-first and underneath.
-      const ld = landingDamage(impact, this.params.landingTolerance ?? 9, this.params.damageScale ?? 1);
+      _gn.set(0, 0, 0);
+      for (let i = 0; i < 4; i++) {
+        if (!this.wheels[i].contact) continue;
+        const nn = ctrl.wheelContactNormal(i);
+        if (nn) _gn.x += nn.x, _gn.y += nn.y, _gn.z += nn.z;
+      }
+      if (_gn.lengthSq() < 1e-6 || _gn.y < 0.3 * _gn.length()) _gn.set(0, 1, 0);
+      _gn.normalize();
+      const vertical = -this.minAirVy;
+      const impact = Math.max(0, -this.airVel.dot(_gn));
+      const misalignDeg = Math.acos(clamp(_up.dot(_gn), -1, 1)) * 57.3;
+      if (impact > 3) events.emit('vehicle:landed', { racer: this.racer, impact, vertical, misalignDeg });
+      // Hard landing: damage above the car's tolerance (jump stat), more when it comes down nose/tail/side first.
+      const ld = this.landingScored ? 0 : landingDamage(impact, this.params.landingTolerance ?? 9, this.params.damageScale ?? 1, misalignDeg);
       if (ld > 0) this.applyHit(ld, _n.set(0, -0.8, 0.6).normalize(), 'landing');
     }
+    // Launch pop (jump stat): leaving a ramp nose-up at speed → a little extra upward speed.
+    // (The rear wheels can leave a moment after the front ones, so "just left a ramp" = touched one ≤ 0.3 s ago.)
+    if (onGround === 0 && this.wheelsOnGround > 0 && (this.params.launchPop ?? 0) > 0 && this.speed > 12 && this.simTime - this.rampT < 0.3 && this.rampT >= 0) {
+      const dv = this.params.launchPop!;
+      if ((globalThis as { __popLog?: boolean }).__popLog) console.log(`[pop] ${this.spec.kind} +${dv}`);
+      body.setLinvel({ x: lv.x, y: lv.y + dv, z: lv.z }, true);
+    }
+    if (onGround === 0) this.airVel.set(lv.x, lv.y, lv.z);
     if (onGround > 0) {
       this.airTime = 0;
       this.minAirVy = 0;
+      this.landingScored = false;
     }
     this.wheelsOnGround = onGround;
 

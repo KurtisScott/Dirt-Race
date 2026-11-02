@@ -253,7 +253,7 @@ export class RaceCourse implements World {
           desc.setTranslation(foot.x, foot.y - 0.01, foot.z).setRotation(q).setFriction(0.9).setCollisionGroups(groups(Group.GROUND, 0xffff)),
           body,
         );
-        physics.tag(col, { kind: 'ground', surface: 'asphalt' });
+        physics.tag(col, { kind: 'ground', surface: 'asphalt', ramp: true });
       }
     }
     // Gorge bridge: a tilted deck cuboid plus side rails (rails redirect like fences).
@@ -298,7 +298,7 @@ export class RaceCourse implements World {
           .setCollisionGroups(groups(Group.GROUND, 0xffff)),
         body,
       );
-      physics.tag(col, { kind: 'ground', surface: 'asphalt' });
+      physics.tag(col, { kind: 'ground', surface: 'asphalt', ramp: true });
     }
     // Log bridge: deck + two entry ramps (trimesh-free: three cuboids/wedges).
     const b = c.bridge;

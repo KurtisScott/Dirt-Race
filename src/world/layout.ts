@@ -35,16 +35,23 @@ export type SegmentTag =
 export const JUMP_RUNUP_M = 230;
 /** Ramp: horizontal length (m), lip angle (deg) and lip height above the run-up (m). The face is a circular arc. */
 export const JUMP_RAMP_LEN_M = 16;
-export const JUMP_RAMP_DEG = 12;
-export const JUMP_RAMP_HEIGHT_M = 2.0;
+export const JUMP_RAMP_DEG = 8;
+export const JUMP_RAMP_HEIGHT_M = 1.3;
 /** THE bonus line: land (on the wheels) at least this far past the lip for +1 point. */
-export const JUMP_BONUS_M = 58;
-/** Landing hill below the lip: flat "table" (m), then a slope that steepens to JUMP_LAND_DEG and rounds out. */
-export const JUMP_TABLE_M = 8;
-export const JUMP_LAND_DEG = 11;
+export const JUMP_BONUS_M = 45;
+/**
+ * Landing hill below the lip (shaped so a clean landing is soft at every distance, like a ski-jump hill):
+ * a flat "table" (m), then the drop follows a parabola drop = JUMP_LAND_CURVE·(u − table)² (it bends away
+ * under the cars' flight paths), its slope capped at JUMP_LAND_DEG, and it rounds out over the last
+ * JUMP_ROUNDOUT_M of the landing zone into the flat run-off.
+ */
+export const JUMP_TABLE_M = 20;
+export const JUMP_LAND_CURVE = 0.0018;
+export const JUMP_LAND_DEG = 24;
+export const JUMP_ROUNDOUT_M = 25;
 /** Landing zone length (lip → start of the run-off), and the sand run-off with a berm at the end (m). */
-export const JUMP_LANDING_M = 140;
-export const JUMP_RUNOFF_M = 110;
+export const JUMP_LANDING_M = 150;
+export const JUMP_RUNOFF_M = 100;
 /** Distance markers every this many metres from the lip (kid-readable signs beside the landing zone). */
 export const JUMP_MARKER_STEP_M = 10;
 

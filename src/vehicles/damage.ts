@@ -14,13 +14,19 @@ export const DAMAGE = {
   hitCap: 30,
   /** Car vs car: multiplier on top of the mass share (a heavier car hurts you more). */
   vehicleK: 0.8,
-  /** Hard landings: % per m/s of downward speed above the car's landing tolerance (jump stat). */
+  /** Hard landings: % per m/s of speed into the ground (along its normal) above the car's landing tolerance (jump stat). */
   landingK: 2.2,
   landingCap: 18,
+  /** Car-vs-ground attitude mismatch (°) that costs nothing (a level car landing on an 11–15° downslope). */
+  landingMisalignFreeDeg: 18,
+  /** Extra effective impact at a 45°+ mismatch (nose-dive / side landing): ×(1 + this). */
+  landingMisalignK: 0.6,
   /** Damaging animals (bear, moose, bull, boar, croc): % per m/s above `animalMin`. */
   animalMin: 3,
   animalK: 1.1,
   animalCap: 16,
+  /** After a damaging animal bump, further animal bumps don't damage for this long (s). */
+  animalCooldownS: 4,
   /** Ignore repeat contacts with the same thing for this long (a hit fires several contact events). */
   cooldownS: 0.4,
   /** Fraction of top speed and engine force lost at 100% damage. The car never stops. */
@@ -43,10 +49,17 @@ export function vehicleImpactDamage(approach: number, myMass: number, otherMass:
   return Math.min(DAMAGE.hitCap, impactDamage(approach) * DAMAGE.vehicleK * share) * scale;
 }
 
-/** Damage (%) from a landing at `impact` m/s downward, for a car tolerating `tolerance` m/s. */
-export function landingDamage(impact: number, tolerance: number, scale = 1): number {
-  if (!(impact > tolerance)) return 0;
-  return Math.min(DAMAGE.landingCap, DAMAGE.landingK * (impact - tolerance)) * scale;
+/**
+ * Damage (%) from a landing at `impact` m/s into the ground (along the ground normal), for a car tolerating
+ * `tolerance` m/s. `misalignDeg` = angle between the car's up axis and the ground normal: beyond
+ * `landingMisalignFreeDeg` (a level car on a sloped landing) the effective impact grows, up to
+ * ×(1 + landingMisalignK) for a 45°+ nose-dive or side landing.
+ */
+export function landingDamage(impact: number, tolerance: number, scale = 1, misalignDeg = 0): number {
+  const m = Math.min(1, Math.max(0, (misalignDeg - DAMAGE.landingMisalignFreeDeg) / (45 - DAMAGE.landingMisalignFreeDeg)));
+  const eff = impact * (1 + DAMAGE.landingMisalignK * m);
+  if (!(eff > tolerance)) return 0;
+  return Math.min(DAMAGE.landingCap, DAMAGE.landingK * (eff - tolerance)) * scale;
 }
 
 /** Damage (%) from bumping a damaging animal at `speed` m/s; harmless animals do nothing. */

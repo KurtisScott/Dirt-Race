@@ -30,10 +30,14 @@ export const CLIMB_POWER = [14, 18, 20, 28, 36] as const;
  * acceleration over the run-up; mass doesn't change a ballistic arc), so the course's end ramp is tuned
  * on speed. The jump stat adds what happens in the air and on touchdown:
  *  - AIR_CONTROL: torque factor that levels pitch/roll in the air (lands on the wheels more often).
- *  - LANDING_TOLERANCE (m/s downward at touchdown): harder landings than this cause damage.
+ *  - LANDING_TOLERANCE (m/s into the ground along its normal at touchdown): harder landings cause damage.
+ *  - LAUNCH_POP (m/s): extra upward speed when leaving a ramp at speed. Many cars share the same top
+ *    speed (buggy / quad / pickups / SUV / van all ≈ 112–115 km/h), so without this the end jump could not
+ *    tell a Jump-4 buggy from a Jump-2 van. Tuned with scripts/jump-tune.ts (DECISIONS.md "End jump retune").
  */
 export const AIR_CONTROL = [0.45, 0.55, 0.65, 0.8, 0.95] as const;
 export const LANDING_TOLERANCE = [8, 8.8, 9.6, 10.5, 11.5] as const;
+export const LAUNCH_POP = [0, 0, 1.2, 1.8, 2.0] as const;
 
 /**
  * Stats (1–5) → physics. This is the single place to tune how vehicles feel.
@@ -104,6 +108,7 @@ export function paramsFromSpec(spec: VehicleSpec): VehicleParams {
     antiRoll: tune.antiRoll ?? 5,
     airControl: byStat(AIR_CONTROL, s.jump),
     landingTolerance: byStat(LANDING_TOLERANCE, s.jump),
+    launchPop: byStat(LAUNCH_POP, s.jump),
     damageScale: spec.toughness ?? 1,
     linearDamping: 0.02,
     angularDamping: 0.6,
