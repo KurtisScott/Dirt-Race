@@ -1,11 +1,12 @@
 import * as THREE from 'three';
-import { events } from '../core/events';
+import { events, type DamageSource } from '../core/events';
 import { InterpolatedPose } from '../core/interpolation';
 import { clamp } from '../core/math';
 import { Group, groups, RAPIER, type PhysicsWorld } from '../core/physics';
 import type { DriveInput, RacerId, SpawnPoint, SurfaceType } from '../core/types';
 import { SURFACES } from '../world/surfaces';
 import type { SurfaceQuery } from '../world/types';
+import { animalDamage, DAMAGE, impactDamage, landingDamage, performanceFactor, vehicleImpactDamage } from './damage';
 import type { ModelBuilder, VehicleModel } from './model';
 import { buildVehicleModel } from './models/build';
 import { paramsFromSpec } from './params';
@@ -49,6 +50,11 @@ const _v2 = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _right = new THREE.Vector3();
+const _n = new THREE.Vector3();
+const _rel = new THREE.Vector3();
+
+/** Live vehicles by collider handle, so a contact handler can read the other car's pre-step velocity and mass. */
+const BY_COLLIDER = new Map<number, RaycastVehicle>();
 
 export function createVehicle(opts: CreateVehicleOptions): Vehicle {
   return new RaycastVehicle(opts);
@@ -80,6 +86,8 @@ class RaycastVehicle implements Vehicle {
   readonly quaternion = new THREE.Quaternion();
   readonly forward = new THREE.Vector3(0, 0, 1);
   readonly object: THREE.Object3D;
+  /** 0..100 (%), see VehicleState.damage. */
+  damage = 0;
 
   private body: RAPIER.RigidBody;
   private controller: RAPIER.DynamicRayCastVehicleController;
@@ -100,6 +108,16 @@ class RaycastVehicle implements Vehicle {
   private topSpeedComp = 1;
   /** Average raw SURFACES grip of grounded wheels (last step). */
   private avgSurfaceGrip = 1;
+  // ---- damage
+  /** Chassis linear velocity after our own forces, before the physics step (for impact speeds). */
+  readonly preVel = new THREE.Vector3();
+  private colliders: number[] = [];
+  private simTime = 0;
+  private hitCooldown = new Map<number, number>();
+  /** Steering pull side (+1 left / −1 right), set by the first hit. */
+  private pullSign = 0;
+  private offContact: () => void;
+  private offAnimal: () => void;
 
   constructor(o: CreateVehicleOptions) {
     this.racer = o.racer;
@@ -156,6 +174,16 @@ class RaycastVehicle implements Vehicle {
       this.body,
     );
     o.physics.tag(roof, { kind: 'vehicle', racer: o.racer });
+    this.colliders = [col.handle, roof.handle];
+    for (const h of this.colliders) BY_COLLIDER.set(h, this);
+    this.offContact = o.physics.onContactForce((e) => this.onContactForce(e));
+    this.offAnimal = events.on('animal:bump', (e) => {
+      if (e.racer !== this.racer) return;
+      const amount = animalDamage(e.speed ?? Math.abs(this.speed), !!e.damaging, this.params.damageScale ?? 1);
+      // Direction: from the car towards the animal (usually the nose).
+      const dir = this.toLocalDir(_n.set(e.x - this.position.x, 0, e.z - this.position.z));
+      this.applyHit(amount, dir.lengthSq() > 1e-6 ? dir : _n.set(0, 0, 1), 'animal');
+    });
 
     // ---- wheels
     this.controller = world.createVehicleController(this.body);
@@ -163,15 +191,18 @@ class RaycastVehicle implements Vehicle {
     this.controller.setIndexForwardAxis = 2;
     const dir = { x: 0, y: -1, z: 0 };
     const axle = { x: -1, y: 0, z: 0 };
+    // Bigger rear wheels (tractor): raise the rear mounts by the radius difference so the chassis sits level.
+    const rearR = p.wheelRadiusRear ?? p.wheelRadius;
+    const rearY = p.wheelY + (rearR - p.wheelRadius);
     const mounts = [
       { x: p.wheelX, y: p.wheelY, z: p.wheelZ },
       { x: -p.wheelX, y: p.wheelY, z: p.wheelZ },
-      { x: p.wheelX, y: p.wheelY, z: -p.wheelZ },
-      { x: -p.wheelX, y: p.wheelY, z: -p.wheelZ },
+      { x: p.wheelX, y: rearY, z: -p.wheelZ },
+      { x: -p.wheelX, y: rearY, z: -p.wheelZ },
     ];
     this.wheels = [];
     for (let i = 0; i < 4; i++) {
-      this.controller.addWheel(mounts[i], dir, axle, p.suspensionRest, p.wheelRadius);
+      this.controller.addWheel(mounts[i], dir, axle, p.suspensionRest, i < 2 ? p.wheelRadius : rearR);
       this.controller.setWheelMaxSuspensionTravel(i, p.suspensionTravel);
       this.controller.setWheelSuspensionStiffness(i, p.suspensionStiffness);
       this.controller.setWheelSuspensionCompression(i, p.suspensionCompression);
@@ -265,7 +296,9 @@ class RaycastVehicle implements Vehicle {
     // ---- steering: speed-sensitive max angle, rate-limited
     const speedT = clamp(absSpeed / p.topSpeed, 0, 1);
     const maxSteer = p.steerLow + (p.steerHigh - p.steerLow) * Math.sqrt(speedT);
-    const targetSteer = -clamp(inp.steer, -1, 1) * maxSteer; // +X is left → right turn is negative angle
+    let targetSteer = -clamp(inp.steer, -1, 1) * maxSteer; // +X is left → right turn is negative angle
+    // Damage: a slight pull to one side (bent steering), only while rolling.
+    if (this.damage > 0 && absSpeed > 1) targetSteer += this.pullSign * DAMAGE.pullRad * (this.damage / 100);
     const maxDelta = p.steerRate * dt;
     this.steerAngle += clamp(targetSteer - this.steerAngle, -maxDelta, maxDelta);
     ctrl.setWheelSteering(FL, this.steerAngle);
@@ -346,14 +379,83 @@ class RaycastVehicle implements Vehicle {
 
     // ---- run the ray-cast vehicle (applies suspension + tyre impulses to the chassis)
     ctrl.updateVehicle(dt, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, groups(Group.VEHICLE, Group.GROUND | Group.STATIC | Group.DEBRIS), (c) => c.parent()?.handle !== body.handle);
+    const pv = body.linvel();
+    this.preVel.set(pv.x, pv.y, pv.z);
+    this.simTime += dt;
+  }
+
+  // ------------------------------------------------------------------ damage
+
+  /** Rapier contact-force events on the chassis: score hits on static obstacles, terrain walls and the other car. */
+  private onContactForce(e: RAPIER.TempContactForceEvent): void {
+    const h1 = e.collider1();
+    const h2 = e.collider2();
+    const mine1 = this.colliders.includes(h1);
+    const mine2 = this.colliders.includes(h2);
+    if (mine1 === mine2) return; // not ours (or our own two colliders)
+    const other = mine1 ? h2 : h1;
+    const tag = this.physics.getTag(other);
+    // Hay, cones and animals: light bumps (animals report through 'animal:bump'); sensors never touch.
+    if (tag && (tag.kind === 'debris' || tag.kind === 'animal' || tag.kind === 'sensor')) return;
+    if (tag?.kind === 'static' && tag.name === 'bump') return; // potholes
+    const until = this.hitCooldown.get(other);
+    if (until !== undefined && until > this.simTime) return;
+    const d = e.maxForceDirection();
+    _n.set(d.x, d.y, d.z);
+    if (_n.lengthSq() < 1e-6) return;
+    _n.normalize();
+    const otherCar = tag?.kind === 'vehicle' ? BY_COLLIDER.get(other) : undefined;
+    _rel.copy(this.preVel);
+    if (otherCar) _rel.sub(otherCar.preVel);
+    let approach = _rel.dot(_n);
+    if (approach < 0) {
+      approach = -approach;
+      _n.negate(); // now points from this car towards what it hit
+    }
+    // Ground under/over the car (scraping, landing, rolling onto the roof) isn't a wall hit; landings are scored separately.
+    if (tag?.kind === 'ground' && Math.abs(_n.y) > 0.6) return;
+    if (approach < DAMAGE.impactMin * 0.6) return;
+    this.hitCooldown.set(other, this.simTime + DAMAGE.cooldownS);
+    const p = this.params;
+    const scale = p.damageScale ?? 1;
+    const amount = otherCar ? vehicleImpactDamage(approach, p.mass, otherCar.params.mass, scale) : impactDamage(approach, scale);
+    // Crash / car-bump sounds (audio already listens; impulse ≈ N·s).
+    events.emit('vehicle:collision', { racer: this.racer, other: otherCar ? 'vehicle' : tag?.kind === 'static' ? 'obstacle' : 'world', impulse: approach * p.mass * 0.5 });
+    this.applyHit(amount, this.toLocalDir(_n), otherCar ? 'vehicle' : tag?.kind === 'ground' ? 'wall' : 'obstacle');
+  }
+
+  /** World direction → unit chassis-space direction (uses the physics pose). */
+  private toLocalDir(v: THREE.Vector3): THREE.Vector3 {
+    const r = this.body.rotation();
+    _q.set(r.x, r.y, r.z, r.w).invert();
+    return v.applyQuaternion(_q).normalize();
+  }
+
+  addDamage(amount: number, localDir: { x: number; y: number; z: number } = { x: 0, y: 0, z: 1 }): void {
+    this.applyHit(amount, _n.set(localDir.x, localDir.y, localDir.z).normalize(), 'other');
+  }
+
+  private applyHit(amount: number, localDir: THREE.Vector3, source: DamageSource): void {
+    if (!(amount >= DAMAGE.minHit) || this.damage >= 100) return;
+    const before = this.damage;
+    this.damage = Math.min(100, before + amount);
+    if (this.pullSign === 0) this.pullSign = Math.abs(localDir.x) > 0.2 ? Math.sign(localDir.x) : Math.random() < 0.5 ? -1 : 1;
+    try {
+      this.model.applyDamage?.({ dir: { x: localDir.x, y: localDir.y, z: localDir.z }, amount: this.damage - before }, this.damage);
+    } catch (err) {
+      console.error('[vehicles] damage visuals failed', err);
+    }
+    events.emit('car:damage', { racer: this.racer, damage: this.damage, delta: this.damage - before, source });
   }
 
   /** Engine force (N) with top-speed fade, surface speed cap, hill-climb boost and slope traction limit. */
   private engineForce(fwdSpeed: number, throttle: number): number {
     const p = this.params;
     const v = Math.max(0, fwdSpeed);
+    // Damage costs up to 25% of top speed and engine force (never stops the car).
+    const perf = performanceFactor(this.damage);
     // Loose/deep surfaces cap the speed of cars with poor off-road ability (sports car bogs in mud).
-    const top = p.topSpeed * (1 - SURFACE_SPEED_PENALTY[this.surface] * (1 - p.offroad));
+    const top = p.topSpeed * perf * (1 - SURFACE_SPEED_PENALTY[this.surface] * (1 - p.offroad));
     // Fade towards `fadeTop` (> top) so that, after aero drag + asphalt rolling resistance, the
     // equilibrium speed on flat asphalt lands on params.topSpeed (M1 was ~10% under).
     const fade = clamp(1 - (v / (top * this.topSpeedComp)) ** 2, 0, 1);
@@ -363,7 +465,7 @@ class RaycastVehicle implements Vehicle {
     const boost = 1 + p.climbBoost * climb;
     // Strong launch, tapering mid-range (feels punchy for a kid without being twitchy).
     const launch = 1 + 0.35 * clamp(1 - v / 8, 0, 1);
-    let f = p.engineForce * throttle * fade * boost * launch;
+    let f = p.engineForce * perf * throttle * fade * boost * launch;
     // Slope traction limit: on a steep climb the tyres can only push mass·g·cos·μ. μ comes from the
     // hill-climb stat scaled by current surface grip (relative to gravel). Blended in from 6° to 12°.
     const slopeDeg = Math.asin(slopeSin) * 57.3;
@@ -425,6 +527,9 @@ class RaycastVehicle implements Vehicle {
     if (onGround > 0 && this.wheelsOnGround === 0 && this.airTime > 0.25) {
       const impact = -this.minAirVy;
       if (impact > 3) events.emit('vehicle:landed', { racer: this.racer, impact });
+      // Hard landing: damage above the car's tolerance (jump stat). Usually nose-first and underneath.
+      const ld = landingDamage(impact, this.params.landingTolerance ?? 9, this.params.damageScale ?? 1);
+      if (ld > 0) this.applyHit(ld, _n.set(0, -0.8, 0.6).normalize(), 'landing');
     }
     if (onGround > 0) {
       this.airTime = 0;
@@ -498,6 +603,9 @@ class RaycastVehicle implements Vehicle {
   }
 
   dispose(): void {
+    this.offContact();
+    this.offAnimal();
+    for (const h of this.colliders) if (BY_COLLIDER.get(h) === this) BY_COLLIDER.delete(h);
     this.object.parent?.remove(this.object);
     this.model.dispose();
     this.physics.world.removeVehicleController(this.controller);

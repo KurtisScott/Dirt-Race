@@ -6,7 +6,9 @@
 import * as THREE from 'three';
 import { initRapier, PhysicsWorld, RAPIER, PHYSICS_DT, Group, groups } from '../src/core/physics';
 import { createVehicle } from '../src/vehicles/vehicle';
-import { VEHICLES } from '../src/vehicles/catalog';
+import { VEHICLES, VEHICLE_KINDS } from '../src/vehicles/catalog';
+import { DAMAGE, impactDamage, landingDamage, performanceFactor } from '../src/vehicles/damage';
+import { events } from '../src/core/events';
 import type { SurfaceType, VehicleKind } from '../src/core/types';
 import { SURFACES } from '../src/world/surfaces';
 
@@ -24,6 +26,12 @@ function setup(kind: VehicleKind, surface: SurfaceType = 'asphalt', spawnY = 0) 
   const col = physics.world.createCollider(RAPIER.ColliderDesc.cuboid(2000, 2, 2000).setTranslation(0, -2, 0).setCollisionGroups(groups(Group.GROUND, 0xffff)), g);
   physics.tag(col, { kind: 'ground', surface });
   const v = createVehicle({ physics, surfaces: { surfaceAt: () => surface }, spec: VEHICLES[kind], paint: 0, racer: 'player', spawn: { x: 0, y: spawnY, z: 0, yaw: 0 } });
+  // Dispose the vehicle with the world (it subscribes to bus events, which must not outlive it).
+  const free = physics.dispose.bind(physics);
+  physics.dispose = () => {
+    v.dispose();
+    free();
+  };
   const step = (n: number, each?: (i: number) => void) => {
     for (let i = 0; i < n; i++) {
       each?.(i);
@@ -37,11 +45,16 @@ function setup(kind: VehicleKind, surface: SurfaceType = 'asphalt', spawnY = 0) 
 }
 
 const up = new THREE.Vector3();
+const kmh = (ms: number) => (ms * 3.6).toFixed(0);
 const upY = (q: THREE.Quaternion) => up.set(0, 1, 0).applyQuaternion(q).y;
 
 const ONLY = process.argv[2];
+/** The original six (the old bonus-hill personality checks are about these). */
 const ALL: VehicleKind[] = ['pickup', 'sports', 'muscle', 'monster', 'buggy', 'sedan'];
-for (const kind of (ONLY === 'personality' ? [] : ONLY ? [ONLY as VehicleKind] : ALL)) {
+/** All sixteen (Round 2). */
+const EVERY: VehicleKind[] = [...VEHICLE_KINDS];
+const SECTIONS = new Set(['personality', 'damage', 'jump']);
+for (const kind of (SECTIONS.has(ONLY) ? [] : ONLY ? [ONLY as VehicleKind] : EVERY)) {
   console.log(`\n=== ${kind} ===`);
   const { physics, v, step } = setup(kind);
   const p = (v as unknown as { params: { mass: number; topSpeed: number } }).params;
@@ -140,8 +153,8 @@ for (const kind of (ONLY === 'personality' ? [] : ONLY ? [ONLY as VehicleKind] :
 // ============================================================================ personalities (SPEC "Vehicles")
 // Uses the real SURFACES table from world/surfaces.ts. Run alone with: npx tsx scripts/physics-test.ts personality
 if (!ONLY || ONLY === 'personality') {
+  // (surface speeds below cover all sixteen; the hill checks stay on the original six)
   console.log('\n=== personalities ===');
-  const kmh = (ms: number) => (ms * 3.6).toFixed(0);
   console.log(`  surfaces: ${(Object.keys(SURFACES) as SurfaceType[]).map((k) => `${k} g${SURFACES[k].grip}/d${SURFACES[k].drag}/r${SURFACES[k].rolling}`).join('  ')}`);
 
   /** Speed after 12 s of full throttle from rest on a flat surface. */
@@ -156,13 +169,17 @@ if (!ONLY || ONLY === 'personality') {
   };
   const surfs: SurfaceType[] = ['asphalt', 'dirt', 'gravel', 'mud', 'sand', 'water'];
   const sp: Record<string, Record<string, number>> = {};
-  for (const k of ALL) {
+  for (const k of EVERY) {
     sp[k] = {};
     for (const s of surfs) sp[k][s] = surfSpeed(k, s);
     console.log(`  ${k.padEnd(8)} ${surfs.map((s) => `${s} ${kmh(sp[k][s]).padStart(3)}`).join('  ')} km/h`);
   }
-  const fastestOn = (s: SurfaceType) => ALL.reduce((a, b) => (sp[b][s] > sp[a][s] ? b : a));
-  check(fastestOn('asphalt') === 'sports', `sports car is fastest on asphalt (${kmh(sp.sports.asphalt)} km/h)`);
+  const fastestOn = (s: SurfaceType, among: VehicleKind[] = ALL) => among.reduce((a, b) => (sp[b][s] > sp[a][s] ? b : a));
+  check(fastestOn('asphalt', EVERY) === 'sports', `sports car is fastest on asphalt of all sixteen (${kmh(sp.sports.asphalt)} km/h)`);
+  check(fastestOn('sand', EVERY) === 'trophy' || fastestOn('sand', EVERY) === 'buggy', `a desert machine is fastest on sand (${fastestOn('sand', EVERY)})`);
+  check(EVERY.every((k) => sp[k].asphalt > 20 && sp[k].mud > 6), `every vehicle keeps moving on every surface (slowest mud: ${kmh(Math.min(...EVERY.map((k) => sp[k].mud)))} km/h)`);
+  check(sp.tractor.mud > sp.tractor.asphalt * 0.8 && sp.tractor.asphalt < sp.sedan.asphalt, `tractor: slowest on the road (${kmh(sp.tractor.asphalt)}) but unbothered by mud (${kmh(sp.tractor.mud)})`);
+  check(sp.hatch.mud < sp.jeep.mud && sp.rally.gravel > sp.hatch.gravel, `hot hatch bogs in mud vs the 4x4 (${kmh(sp.hatch.mud)} vs ${kmh(sp.jeep.mud)}); rally car beats it on gravel`);
   check(sp.sports.mud < sp.sports.asphalt * 0.4, `sports car bogs in mud: ${kmh(sp.sports.mud)} km/h (< 40% of asphalt)`);
   check(sp.sports.mud < sp.monster.mud * 0.75 && sp.sports.mud < sp.pickup.mud, `sports in mud slower than monster (${kmh(sp.monster.mud)}) and pickup (${kmh(sp.pickup.mud)})`);
   check(fastestOn('sand') === 'buggy', `buggy is fastest on sand (${kmh(sp.buggy.sand)} km/h vs sports ${kmh(sp.sports.sand)})`);
@@ -240,6 +257,7 @@ if (!ONLY || ONLY === 'personality') {
     v.input = { steer: 0, throttle: 1, brake: 0 };
     run(240);
     const d = (v.position.z - start.z) / Math.cos(ang);
+    v.dispose();
     physics.dispose();
     return d;
   };
@@ -271,9 +289,9 @@ if (!ONLY || ONLY === 'personality') {
     return n;
   };
   const bn: Record<string, number> = {};
-  for (const k of ALL) bn[k] = bounce(k);
-  console.log(`  bounces: ${ALL.map((k) => `${k} ${bn[k]}`).join('  ')}`);
-  check(bn.buggy > bn.sedan && bn.buggy >= Math.max(...ALL.filter((k) => k !== 'buggy').map((k) => bn[k])), 'buggy is the bounciest, sedan settles calmly');
+  for (const k of EVERY) bn[k] = bounce(k);
+  console.log(`  bounces: ${EVERY.map((k) => `${k} ${bn[k]}`).join('  ')}`);
+  check(bn.buggy > bn.sedan && bn.buggy >= Math.max(...EVERY.filter((k) => k !== 'buggy').map((k) => bn[k])), 'buggy is the bounciest, sedan settles calmly');
 
   /** Crawl: from rest, drive at half throttle over a fixed log (half sunk) 8 m ahead. */
   const LOG_R = 0.3;
@@ -291,9 +309,249 @@ if (!ONLY || ONLY === 'personality') {
     physics.dispose();
     return ok;
   };
-  const cr = Object.fromEntries(ALL.map((k) => [k, crawl(k)]));
-  console.log(`  crawl over a log (top 0.5 m) at half throttle: ${ALL.map((k) => `${k} ${cr[k] ? 'yes' : 'no'}`).join('  ')}`);
-  check(cr.monster && cr.pickup, 'monster truck and pickup crawl over a log');
+  const cr = Object.fromEntries(EVERY.map((k) => [k, crawl(k)]));
+  console.log(`  crawl over a log (top 0.5 m) at half throttle: ${EVERY.map((k) => `${k} ${cr[k] ? 'yes' : 'no'}`).join('  ')}`);
+  check(cr.monster && cr.pickup && cr.lifted && cr.tractor && cr.jeep, 'monster truck, pickup, lifted pickup, tractor and 4x4 crawl over a log');
+}
+
+// ============================================================================ end jump (Round 2)
+// A generic long jump: 220 m asphalt run-up from rest, a 15° × 10 m ramp (2.6 m lip), flat landing.
+// Prints launch speed / distance / clean landing per vehicle as data for tuning the course's end ramp.
+if (!ONLY || ONLY === 'jump') {
+  console.log('\n=== end jump (220 m run-up, 15° ramp, 2.6 m lip) ===');
+  const jump = (kind: VehicleKind) => {
+    const { physics, v, step } = setup(kind, 'asphalt');
+    const ang = (15 * Math.PI) / 180;
+    const len = 10;
+    const z0 = 220;
+    const h = len * Math.sin(ang);
+    const dz = len * Math.cos(ang);
+    const w = 4;
+    const pts = new Float32Array([-w, 0, z0, w, 0, z0, -w, 0, z0 + dz, w, 0, z0 + dz, -w, h, z0 + dz, w, h, z0 + dz]);
+    const col = physics.world.createCollider(RAPIER.ColliderDesc.convexHull(pts)!.setCollisionGroups(groups(Group.GROUND, 0xffff)), physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed()));
+    physics.tag(col, { kind: 'ground', surface: 'asphalt' });
+    step(60);
+    v.input = { steer: 0, throttle: 1, brake: 0 };
+    let launch = 0;
+    let land = -1;
+    let upright = false;
+    let maxAir = 0;
+    let airborne = false;
+    const lip = z0 + dz;
+    step(60 * 40, () => {
+      // keep it straight
+      const lat = v.position.x;
+      v.input = { steer: Math.max(-1, Math.min(1, lat * 0.5)), throttle: land < 0 ? 1 : 0, brake: land < 0 ? 0 : 1 };
+      if (!launch && v.position.z > lip - 0.5) launch = v.speed;
+      maxAir = Math.max(maxAir, v.airTime);
+      // (airTime resets in postPhysics on touchdown, so remember that we were flying)
+      if (launch && land < 0 && airborne && v.wheelsOnGround >= 2) land = v.position.z - lip;
+      airborne = v.airTime > 0.3;
+      if (land >= 0 && Math.abs(v.speed) < 3 && !upright) upright = up.set(0, 1, 0).applyQuaternion(v.quaternion).y > 0.8;
+    });
+    const res = { launch, land, upright, air: maxAir, damage: v.damage };
+    physics.dispose();
+    return res;
+  };
+  const J: Record<string, ReturnType<typeof jump>> = {};
+  for (const k of EVERY) {
+    J[k] = jump(k);
+    const st = VEHICLES[k].stats;
+    console.log(`  ${k.padEnd(8)} jump ${st.jump} top ${st.topSpeed}: launch ${kmh(J[k].launch).padStart(3)} km/h, landed ${J[k].land.toFixed(1).padStart(5)} m past the lip, air ${J[k].air.toFixed(2)} s, ${J[k].upright ? 'upright' : 'CRASHED'}, damage ${J[k].damage.toFixed(0)}%`);
+  }
+  check(EVERY.every((k) => J[k].land > 0), 'every vehicle flies off the ramp and lands');
+  const order = [...EVERY].sort((a, b) => J[a].land - J[b].land);
+  check(order.slice(0, 3).includes('sedan'), `grandma's sedan is among the three shortest jumps (${order.slice(0, 3).join(', ')})`);
+  // Higher jump stat → farther on average (the stat summarises speed + flight).
+  const avg = (n: number) => {
+    const ks = EVERY.filter((k) => VEHICLES[k].stats.jump === n);
+    return ks.length ? ks.reduce((a, k) => a + J[k].land, 0) / ks.length : NaN;
+  };
+  const avgs = [1, 2, 3, 4, 5].map(avg);
+  check(avgs.every((x, i) => i === 0 || x > avgs[i - 1]), `jump stat tracks distance: average by stat 1..5 = ${avgs.map((x) => x.toFixed(0)).join(' < ')} m`);
+  check(EVERY.filter((k) => J[k].upright).length >= 13, `most vehicles land upright (${EVERY.filter((k) => J[k].upright).length}/16)`);
+}
+
+// ============================================================================ damage (Round 2)
+if (!ONLY || ONLY === 'damage') {
+  console.log('\n=== damage ===');
+  // Rules (pure functions)
+  check(impactDamage(DAMAGE.impactMin - 0.1) === 0 && impactDamage(3) === 0, `light bumps do nothing (below ${DAMAGE.impactMin} m/s)`);
+  check(impactDamage(14) > 10 && impactDamage(14) < 25, `a 50 km/h head-on hit does ${impactDamage(14).toFixed(1)}%`);
+  check(impactDamage(80) === DAMAGE.hitCap, `one hit is capped at ${DAMAGE.hitCap}%`);
+  check(landingDamage(8, 9) === 0 && landingDamage(14, 9) > 5, `landings: soft = 0, hard = ${landingDamage(14, 9).toFixed(1)}%`);
+  check(performanceFactor(0) === 1 && Math.abs(performanceFactor(100) - 0.75) < 1e-9 && performanceFactor(250) === 0.75, 'performance factor 1 → 0.75 at 100% (never lower)');
+
+  /** Drive straight into an obstacle `dist` m ahead, released at `speed` m/s (no throttle). */
+  const ram = (kind: VehicleKind, speed: number, obstacle: 'boulder' | 'hay' | 'wall') => {
+    const { physics, v, step } = setup(kind);
+    step(60);
+    const body = (v as unknown as { rigidBody: RAPIER.RigidBody }).rigidBody;
+    const z = 12;
+    if (obstacle === 'hay') {
+      const b = physics.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(0, 0.6, z));
+      const c = physics.world.createCollider(RAPIER.ColliderDesc.cylinder(0.6, 0.7).setMass(60).setCollisionGroups(groups(Group.DEBRIS, 0xffff)), b);
+      physics.tag(c, { kind: 'debris', name: 'hay bale' });
+    } else {
+      const c = physics.world.createCollider(
+        (obstacle === 'wall' ? RAPIER.ColliderDesc.cuboid(6, 2, 1) : RAPIER.ColliderDesc.ball(1.2)).setTranslation(0, obstacle === 'wall' ? 1 : 0.8, z + 1).setCollisionGroups(groups(obstacle === 'wall' ? Group.GROUND : Group.STATIC, 0xffff)),
+        physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed()),
+      );
+      physics.tag(c, obstacle === 'wall' ? { kind: 'ground', surface: 'dirt' } : { kind: 'static', name: 'boulder' });
+    }
+    body.setLinvel({ x: 0, y: 0, z: speed }, true);
+    v.input = { steer: 0, throttle: 0, brake: 0 };
+    step(150);
+    const d = v.damage;
+    return { physics, v, step, d };
+  };
+  const slow = ram('pickup', 3, 'boulder');
+  check(slow.d === 0, `pickup bumps a boulder at 11 km/h: ${slow.d.toFixed(1)}% (nothing)`);
+  slow.physics.dispose();
+  const hay = ram('sports', 20, 'hay');
+  check(hay.d === 0, `sports car smashes a hay bale at 72 km/h: ${hay.d.toFixed(1)}% (nothing)`);
+  hay.physics.dispose();
+  const wall = ram('pickup', 16, 'wall');
+  check(wall.d > 5 && wall.d <= DAMAGE.hitCap, `pickup into a terrain wall at 58 km/h: ${wall.d.toFixed(1)}%`);
+  wall.physics.dispose();
+  const hard = ram('pickup', 16, 'boulder');
+  check(hard.d > 5, `pickup into a boulder at 58 km/h: ${hard.d.toFixed(1)}%`);
+  // Persistence through Reset
+  const before = hard.v.damage;
+  hard.v.reset({ x: 0, y: 0, z: -30, yaw: 0 });
+  hard.step(30);
+  check(hard.v.damage === before, `damage persists through Reset (${hard.v.damage.toFixed(1)}%)`);
+  hard.physics.dispose();
+  // Tougher vehicles take less from the same hit
+  const bus = ram('bus', 16, 'boulder');
+  const sports = ram('sports', 16, 'boulder');
+  check(bus.d < sports.d, `the bus shrugs off a hit the sports car feels (${bus.d.toFixed(1)}% vs ${sports.d.toFixed(1)}%)`);
+  bus.physics.dispose();
+  sports.physics.dispose();
+
+  // Hard landing: drop from 7 m
+  {
+    const { physics, v, step } = setup('sedan', 'asphalt', 7);
+    step(240);
+    check(v.damage > 0, `sedan dropped from 7 m: ${v.damage.toFixed(1)}% (hard landing)`);
+    physics.dispose();
+    const soft = setup('buggy', 'asphalt', 1.2);
+    soft.step(180);
+    check(soft.v.damage === 0, 'buggy dropped from 1.2 m: no damage');
+    soft.physics.dispose();
+  }
+
+  // Car vs car, head-on: the heavier car takes less
+  {
+    const physics = new PhysicsWorld();
+    const g = physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    physics.tag(physics.world.createCollider(RAPIER.ColliderDesc.cuboid(500, 2, 500).setTranslation(0, -2, 0).setCollisionGroups(groups(Group.GROUND, 0xffff)), g), { kind: 'ground', surface: 'asphalt' });
+    const mk = (kind: VehicleKind, z: number, yaw: number, racer: 'player' | 'cpu') => createVehicle({ physics, surfaces: { surfaceAt: () => 'asphalt' }, spec: VEHICLES[kind], paint: 0, racer, spawn: { x: 0, y: 0, z, yaw } });
+    const a = mk('hatch', 0, 0, 'player');
+    const b = mk('bus', 30, Math.PI, 'cpu');
+    const seen: { racer: string; damage: number; delta: number }[] = [];
+    const off = events.on('car:damage', (e) => seen.push(e));
+    const run = (n: number) => {
+      for (let i = 0; i < n; i++) {
+        for (const v of [a, b]) v.fixedUpdate!(PHYSICS_DT);
+        physics.step();
+        for (const v of [a, b]) {
+          v.postPhysics!(PHYSICS_DT);
+          v.update!(PHYSICS_DT, 1);
+        }
+      }
+    };
+    run(60);
+    (a as unknown as { rigidBody: RAPIER.RigidBody }).rigidBody.setLinvel({ x: 0, y: 0, z: 9 }, true);
+    (b as unknown as { rigidBody: RAPIER.RigidBody }).rigidBody.setLinvel({ x: 0, y: 0, z: -9 }, true);
+    run(150);
+    off();
+    check(a.damage > 0 && b.damage > 0 && a.damage > b.damage, `head-on at 65 km/h closing: hatch ${a.damage.toFixed(1)}%, bus ${b.damage.toFixed(1)}%`);
+    check(seen.length > 0 && seen.every((e) => e.delta > 0 && e.damage <= 100), `'car:damage' events carry total + delta (${seen.length} events)`);
+    a.dispose();
+    b.dispose();
+    physics.dispose();
+  }
+
+  // Animals: damaging ones dent, small ones only bump
+  {
+    const { physics, v, step } = setup('pickup');
+    step(30);
+    events.emit('animal:bump', { kind: 'duck', racer: 'player', x: v.position.x, z: v.position.z + 2, damaging: false, speed: 15 });
+    check(v.damage === 0, 'bumping a duck: no damage');
+    events.emit('animal:bump', { kind: 'bear', racer: 'player', x: v.position.x, z: v.position.z + 2, damaging: true, speed: 15 });
+    check(v.damage > 5 && v.damage <= DAMAGE.animalCap, `bumping a bear at 54 km/h: ${v.damage.toFixed(1)}%`);
+    events.emit('animal:bump', { kind: 'bear', racer: 'cpu', x: 0, z: 0, damaging: true, speed: 15 });
+    check(v.damage <= DAMAGE.animalCap, "another racer's animal bump doesn't count");
+    physics.dispose();
+  }
+
+  // Driving effect: top speed −25% at 100%, never stops; caps at 100
+  {
+    const top = (dmg: number) => {
+      const { physics, v, step } = setup('pickup');
+      step(30);
+      if (dmg) v.addDamage(dmg);
+      v.input = { steer: 0, throttle: 1, brake: 0 };
+      let t30 = -1;
+      step(60 * 15, (i) => {
+        if (t30 < 0 && v.speed > 30 / 3.6) t30 = i * PHYSICS_DT;
+      });
+      const r = { top: v.speed, t30, damage: v.damage };
+      physics.dispose();
+      return r;
+    };
+    const t0 = top(0);
+    const t50 = top(50);
+    const t100 = top(100);
+    const tOver = top(250);
+    console.log(`  pickup top speed: 0% ${kmh(t0.top)} km/h (0-30 ${t0.t30.toFixed(2)} s), 50% ${kmh(t50.top)} (${t50.t30.toFixed(2)} s), 100% ${kmh(t100.top)} (${t100.t30.toFixed(2)} s)`);
+    check(t100.top / t0.top > 0.7 && t100.top / t0.top < 0.82, `100% damage costs about a quarter of top speed (${((1 - t100.top / t0.top) * 100).toFixed(0)}%)`);
+    check(t50.top < t0.top && t50.top > t100.top, 'top speed drops progressively with damage');
+    check(t100.t30 > t0.t30 && t100.t30 > 0, `acceleration is slower but never zero (0-30 km/h ${t100.t30.toFixed(2)} s)`);
+    check(tOver.damage === 100, `damage caps at 100% (${tOver.damage})`);
+  }
+
+  // Steering pull at 100%: drifts to one side with no steering input
+  {
+    const { physics, v, step } = setup('sedan');
+    step(30);
+    v.addDamage(100, { x: 1, y: 0, z: 0.3 });
+    v.input = { steer: 0, throttle: 0.7, brake: 0 };
+    step(60 * 8);
+    const lat = v.position.x;
+    check(Math.abs(lat) > 1 && Math.abs(lat) < 40, `a wrecked car pulls slightly to one side (${lat.toFixed(1)} m off line after 8 s)`);
+    physics.dispose();
+  }
+
+  // Visuals: dents edit geometry in place (one crack decal at most), and dispose cleans up
+  {
+    const { physics, v } = setup('sedan');
+    const obj = v.object;
+    const meshes = () => {
+      let n = 0;
+      obj.traverse((o) => ((o as THREE.Mesh).isMesh ? n++ : 0));
+      return n;
+    };
+    const n0 = meshes();
+    const paint = obj.getObjectByName('paint') as THREE.Mesh;
+    const pos0 = Float32Array.from(paint.geometry.attributes.position.array as Float32Array);
+    for (let i = 0; i < 8; i++) v.addDamage(12, { x: Math.sin(i), y: 0, z: Math.cos(i) });
+    const pos1 = paint.geometry.attributes.position.array as Float32Array;
+    let moved = 0;
+    let maxOff = 0;
+    for (let i = 0; i < pos0.length; i += 3) {
+      const d = Math.hypot(pos1[i] - pos0[i], pos1[i + 1] - pos0[i + 1], pos1[i + 2] - pos0[i + 2]);
+      if (d > 1e-4) moved++;
+      maxOff = Math.max(maxOff, d);
+    }
+    check(moved > 50 && maxOff <= 0.2001, `dents: ${moved} paint vertices moved, max ${maxOff.toFixed(3)} m (capped)`);
+    check(!!obj.getObjectByName('crack'), 'cracked windscreen decal after heavy damage');
+    const n1 = meshes();
+    check(n1 - n0 <= 1, `no new meshes per hit (${n0} → ${n1}, crack decal only; fallen bumpers leave the car)`);
+    check([...Array(pos1.length).keys()].every((i) => Number.isFinite(pos1[i])), 'dented geometry has no NaNs');
+    physics.dispose();
+  }
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');

@@ -2,104 +2,13 @@ import * as THREE from 'three';
 import type { VehicleKind } from '../../core/types';
 import type { VehicleModel } from '../model';
 import type { VehicleParams, VehicleSpec, VehicleState } from '../types';
-import { box, buildWheel, C, cyl, groundOffset, paintMaterial, Parts, profile, rbox, sharedMaterials, topStrip, tube, wheelCentreY, type MatKey, type WheelStyle } from './kit';
-import { Loft, type LoftSpec } from './loft';
+import { box, buildWheel, C, cyl, groundOffset, paintMaterial, Parts, profile, rbox, sharedMaterials, topStrip, tube, wheelCentreY, type MatKey } from './kit';
+import type { Loft } from './loft';
 import { LinkRig, type Link } from './rig';
 
-/**
- * Per-kind procedural models. Everything is built in "ground space" (y = 0 under the car at rest,
- * +Z forward, +X left) inside `body`, which is offset so it lines up with the physics chassis.
- */
-
-const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
-
-interface Ctx {
-  spec: VehicleSpec;
-  p: VehicleParams;
-  paint: number;
-  accent: number;
-  parts: Parts;
-  /** Wheel centre height in ground space at rest. */
-  r: number;
-  wx: number;
-  wz: number;
-}
-
-interface Design {
-  wheel: WheelStyle;
-  /** Optional rear wheel style (buggy: fatter rears). */
-  rearWheel?: WheelStyle;
-  links?: Link[];
-}
-
-/** Lightness-aware contrast colour for stripes etc. */
-function contrast(hex: number): number {
-  const c = new THREE.Color(hex);
-  const l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
-  return l > 0.35 ? 0x161616 : 0xf4f4f0;
-}
-
-function shade(hex: number, k: number): number {
-  return new THREE.Color(hex).multiplyScalar(k).getHex();
-}
-
-/** Tapered plan-view half width. */
-function plan(hw: number, front: number, rear: number, noseT: number, tailT: number, noseStart: number, tailStart: number) {
-  return (z: number) => {
-    let f = 1;
-    if (z > noseStart) f -= noseT * ((z - noseStart) / (front - noseStart)) ** 2;
-    if (z < tailStart) f -= tailT * ((tailStart - z) / (tailStart - rear)) ** 2;
-    return hw * f;
-  };
-}
-
-function addLoft(c: Ctx, spec: Omit<LoftSpec, 'paint'>): Loft {
-  const loft = new Loft({ ...spec, paint: c.paint });
-  const geos = loft.build();
-  for (const k of Object.keys(geos) as MatKey[]) c.parts.addRaw(k, geos[k]!);
-  return loft;
-}
-
-/** Add a part placed on the nose/tail surface of a loft (local +Z = outward). */
-function onEnd(c: Ctx, key: MatKey, geo: THREE.BufferGeometry, loft: Loft, x: number, y: number, dir: 1 | -1, color: number, sink = 0.01) {
-  const m = loft.onEnd(x, y, dir, sink);
-  c.parts.add(key, geo.applyMatrix4(m), { color });
-}
-
-/** Mirrored pair helper. */
-function pair(fn: (s: 1 | -1) => void) {
-  fn(1);
-  fn(-1);
-}
-
-function roundLamp(c: Ctx, loft: Loft, x: number, y: number, dir: 1 | -1, rad: number, color: number, key: MatKey = 'lamp', ring = true) {
-  onEnd(c, key, cyl(rad, 0.05, 0, 0, 0.0, 'z', 10), loft, x, y, dir, color, -0.012);
-  if (ring) onEnd(c, 'chrome', cyl(rad * 1.22, 0.04, 0, 0, -0.01, 'z', 10), loft, x, y, dir, 0xffffff, -0.012);
-}
-
-function mirror(c: Ctx, loft: Loft, z: number, y: number, size = 1, color = c.paint) {
-  pair((s) => {
-    const hw = loft.halfWidthAt(z, y - 0.02);
-    c.parts.add('paint', rbox(0.1 * size, 0.1 * size, 0.16 * size, s * (hw + 0.09 * size), y + 0.03, z, 0.025), { color });
-    c.parts.add('trim', box(0.08, 0.025, 0.06, s * (hw + 0.03), y, z), { color: C.black });
-  });
-}
-
-function doorSeams(c: Ctx, loft: Loft, zs: number[], y0: number, y1: number) {
-  pair((s) => {
-    for (const z of zs) {
-      const hw = loft.halfWidthAt(z, (y0 + y1) / 2);
-      c.parts.add('trim', box(0.006, y1 - y0, 0.012, s * (hw + 0.002), (y0 + y1) / 2, z), { color: 0x101010 });
-    }
-  });
-}
-
-function handle(c: Ctx, loft: Loft, z: number, y: number) {
-  pair((s) => {
-    const hw = loft.halfWidthAt(z, y);
-    c.parts.add('chrome', box(0.02, 0.03, 0.14, s * (hw + 0.006), y, z), { color: 0xffffff });
-  });
-}
+import { addLoft, bump, contrast, doorSeams, handle, mirror, onEnd, pair, plan, roundLamp, shade, V, type BumperEnd, type Ctx, type Design } from './common';
+import { DamageFx } from './damageFx';
+import { DESIGNS2 } from './designs2';
 
 // =========================================================================== SPORTS
 function sports(c: Ctx): Design {
@@ -139,10 +48,11 @@ function sports(c: Ctx): Design {
   // Front: slim headlights, big lower intake, splitter
   pair((s) => onEnd(c, 'lamp', rbox(0.34, 0.07, 0.05, 0, 0, 0, 0.03), loft, s * 0.6, 0.5, 1, C.headlight));
   onEnd(c, 'trim', rbox(1.1, 0.13, 0.05, 0, 0, 0, 0.05), loft, 0, 0.3, 1, C.black);
-  c.parts.add('trim', rbox(1.7, 0.03, 0.2, 0, 0.16, 2.06, 0.01), { color: C.black });
+  bump(c, 'front', 'trim', rbox(1.7, 0.03, 0.2, 0, 0.16, 2.06, 0.01), C.black);
+  bump(c, 'front', 'trim', rbox(1.5, 0.08, 0.06, 0, 0.21, 2.12, 0.02), C.black);
   // Rear: thin light bar, diffuser, twin exhausts, wing
   pair((s) => onEnd(c, 'tail', rbox(0.5, 0.06, 0.05, 0, 0, 0, 0.025), loft, s * 0.55, 0.75, -1, C.tail));
-  onEnd(c, 'trim', rbox(1.3, 0.14, 0.05, 0, 0, 0, 0.03), loft, 0, 0.27, -1, C.black);
+  bump(c, 'rear', 'trim', rbox(1.3, 0.14, 0.05, 0, 0, 0, 0.03).applyMatrix4(loft.onEnd(0, 0.27, -1, 0.01)), C.black);
   pair((s) => c.parts.add('chrome', cyl(0.045, 0.14, s * 0.32, 0.26, -2.14, 'z', 8), { color: 0xffffff }));
   c.parts.add('paint', rbox(1.6, 0.035, 0.28, 0, 1.03, -1.98, 0.015), { color: c.paint });
   pair((s) => c.parts.add('trim', box(0.04, 0.16, 0.12, s * 0.55, 0.93, -1.98), { color: C.black }));
@@ -211,8 +121,8 @@ function muscle(c: Ctx): Design {
   onEnd(c, 'trim', rbox(1.62, 0.3, 0.05, 0, 0, 0, 0.04), loft, 0, 0.6, 1, 0x1a1a1a, 0.02);
   pair((s) => roundLamp(c, loft, s * 0.66, 0.6, 1, 0.095, C.headlight));
   pair((s) => roundLamp(c, loft, s * 0.43, 0.6, 1, 0.08, C.headlight));
-  c.parts.add('chrome', rbox(1.98, 0.13, 0.16, 0, 0.32, 2.34, 0.05), { color: 0xffffff });
-  c.parts.add('chrome', rbox(1.98, 0.13, 0.16, 0, 0.34, -2.34, 0.05), { color: 0xffffff });
+  bump(c, 'front', 'chrome', rbox(1.98, 0.13, 0.16, 0, 0.32, 2.34, 0.05), 0xffffff);
+  bump(c, 'rear', 'chrome', rbox(1.98, 0.13, 0.16, 0, 0.34, -2.34, 0.05), 0xffffff);
   // Rear: wide tail lights, ducktail spoiler, twin exhausts
   pair((s) => onEnd(c, 'tail', rbox(0.62, 0.12, 0.05, 0, 0, 0, 0.03), loft, s * 0.5, 0.72, -1, C.tail));
   c.parts.add('paint', rbox(1.7, 0.06, 0.16, 0, 0.97, -2.28, 0.02), { color: c.paint });
@@ -224,25 +134,30 @@ function muscle(c: Ctx): Design {
 }
 
 // =========================================================================== PICKUP
-function pickup(c: Ctx): Design {
+/**
+ * The pickup's cab + bed, raised by `lift` (0 for the pickup; the lifted pickup in designs2.ts reuses it).
+ * Returns the loft and bed extents so callers can add their own bumpers and extras.
+ */
+export function pickupBody(c: Ctx, lift = 0): { loft: Loft; L: number; bz0: number; bz1: number; top: number; sill: number } {
   const { r, wz } = c;
   const L = c.spec.size.length / 2;
-  const sill = 0.5;
+  const Y = (y: number) => y + lift;
+  const sill = Y(0.5);
   const shape = profile([
     [L - 0.1, sill],
     { q: [L, sill, L, sill + 0.15] },
-    [L - 0.02, 1.13],
-    { q: [L - 0.04, 1.2, L - 0.16, 1.21] },
-    [1.0, 1.28],
-    [0.38, 1.75],
-    { q: [0.3, 1.8, 0.16, 1.8] },
-    [-0.58, 1.79],
-    { q: [-0.66, 1.78, -0.67, 1.7] },
+    [L - 0.02, Y(1.13)],
+    { q: [L - 0.04, Y(1.2), L - 0.16, Y(1.21)] },
+    [1.0, Y(1.28)],
+    [0.38, Y(1.75)],
+    { q: [0.3, Y(1.8), 0.16, Y(1.8)] },
+    [-0.58, Y(1.79)],
+    { q: [-0.66, Y(1.78), -0.67, Y(1.7)] },
     [-0.68, sill],
   ]);
   const loft = addLoft(c, {
     shape,
-    belt: 1.29,
+    belt: Y(1.29),
     halfWidth: plan(1.0, L, -0.68, 0.05, 0, 1.8, -0.68),
     tumble: 0.12,
     shoulder: 0.05,
@@ -261,7 +176,7 @@ function pickup(c: Ctx): Design {
   // Bed: side walls with wheel arches, floor, front wall, tailgate
   const bz0 = -L;
   const bz1 = -0.72;
-  const top = 1.29;
+  const top = Y(1.29);
   const sideShape = profile([
     [bz1, sill],
     [bz1, top],
@@ -277,32 +192,39 @@ function pickup(c: Ctx): Design {
     c.parts.add('paint', g, { color: c.paint, crease: 0.5 });
     c.parts.add('trim', box(0.12, 0.03, bz1 - bz0, s * 0.94, top + 0.015, (bz0 + bz1) / 2), { color: C.bedliner });
   });
-  c.parts.add('trim', box(1.84, 0.06, bz1 - bz0 - 0.06, 0, 0.85, (bz0 + bz1) / 2 + 0.03), { color: C.bedliner });
-  c.parts.add('trim', box(1.6, 0.36, bz1 - bz0 - 0.1, 0, 0.64, (bz0 + bz1) / 2), { color: C.darkGrey });
-  pair((s) => c.parts.add('trim', rbox(0.3, 0.3, 0.9, s * 0.78, 0.92, -wz, 0.1), { color: C.bedliner }));
+  c.parts.add('trim', box(1.84, 0.06, bz1 - bz0 - 0.06, 0, Y(0.85), (bz0 + bz1) / 2 + 0.03), { color: C.bedliner });
+  c.parts.add('trim', box(1.6, 0.36, bz1 - bz0 - 0.1, 0, Y(0.64), (bz0 + bz1) / 2), { color: C.darkGrey });
+  pair((s) => c.parts.add('trim', rbox(0.3, 0.3, 0.9, s * 0.78, Y(0.92), -wz, 0.1), { color: C.bedliner }));
   c.parts.add('paint', rbox(2.0, 0.78, 0.07, 0, sill + 0.4, bz0 + 0.035, 0.03), { color: c.paint });
-  c.parts.add('trim', box(1.0, 0.05, 0.02, 0, 1.12, bz0 - 0.005), { color: C.black });
-  c.parts.add('paint', rbox(1.84, 0.5, 0.06, 0, 1.06, bz1 - 0.03, 0.02), { color: c.paint });
+  c.parts.add('trim', box(1.0, 0.05, 0.02, 0, Y(1.12), bz0 - 0.005), { color: C.black });
+  c.parts.add('paint', rbox(1.84, 0.5, 0.06, 0, Y(1.06), bz1 - 0.03, 0.02), { color: c.paint });
   // Cab back window
-  c.parts.add('glass', rbox(1.3, 0.32, 0.03, 0, 1.52, -0.69, 0.05), { color: 0xffffff });
-  // Front: chrome grille with bars, square headlights, chrome bumpers
-  onEnd(c, 'chrome', rbox(1.2, 0.42, 0.05, 0, 0, 0, 0.04), loft, 0, 0.92, 1, 0xffffff);
-  for (const y of [0.8, 0.92, 1.04]) onEnd(c, 'trim', box(1.08, 0.06, 0.04, 0, 0, 0), loft, 0, y, 1, 0x161616, 0.0);
-  pair((s) => onEnd(c, 'lamp', rbox(0.26, 0.2, 0.05, 0, 0, 0, 0.03), loft, s * 0.78, 0.98, 1, C.headlight));
-  pair((s) => onEnd(c, 'lamp', rbox(0.2, 0.07, 0.04, 0, 0, 0, 0.02), loft, s * 0.8, 0.8, 1, C.amber));
-  c.parts.add('chrome', rbox(2.06, 0.2, 0.2, 0, 0.55, L + 0.04, 0.06), { color: 0xffffff });
-  c.parts.add('chrome', rbox(2.06, 0.16, 0.22, 0, 0.55, -L - 0.06, 0.05), { color: 0xffffff });
-  c.parts.add('trim', box(0.12, 0.08, 0.2, 0, 0.5, -L - 0.2), { color: C.darkGrey });
+  c.parts.add('glass', rbox(1.3, 0.32, 0.03, 0, Y(1.52), -0.69, 0.05), { color: 0xffffff });
+  // Front: chrome grille with bars, square headlights
+  onEnd(c, 'chrome', rbox(1.2, 0.42, 0.05, 0, 0, 0, 0.04), loft, 0, Y(0.92), 1, 0xffffff);
+  for (const y of [0.8, 0.92, 1.04]) onEnd(c, 'trim', box(1.08, 0.06, 0.04, 0, 0, 0), loft, 0, Y(y), 1, 0x161616, 0.0);
+  pair((s) => onEnd(c, 'lamp', rbox(0.26, 0.2, 0.05, 0, 0, 0, 0.03), loft, s * 0.78, Y(0.98), 1, C.headlight));
+  pair((s) => onEnd(c, 'lamp', rbox(0.2, 0.07, 0.04, 0, 0, 0, 0.02), loft, s * 0.8, Y(0.8), 1, C.amber));
   // Rear: tall tail lights on the bed corners
-  pair((s) => c.parts.add('tail', rbox(0.1, 0.36, 0.05, s * 0.93, 1.02, bz0 - 0.005, 0.02), { color: C.tail }));
+  pair((s) => c.parts.add('tail', rbox(0.1, 0.36, 0.05, s * 0.93, Y(1.02), bz0 - 0.005, 0.02), { color: C.tail }));
+  mirror(c, loft, 0.85, Y(1.36), 1.25, C.darkGrey);
+  doorSeams(c, loft, [0.92, 0.1, -0.62], Y(0.55), Y(1.27));
+  handle(c, loft, -0.02, Y(1.15));
+  handle(c, loft, -0.5, Y(1.15));
+  return { loft, L, bz0, bz1, top, sill };
+}
+
+function pickup(c: Ctx): Design {
+  const { r } = c;
+  const { L } = pickupBody(c, 0);
+  // Chrome bumpers + hitch
+  bump(c, 'front', 'chrome', rbox(2.06, 0.2, 0.2, 0, 0.55, L + 0.04, 0.06), 0xffffff);
+  bump(c, 'rear', 'chrome', rbox(2.06, 0.16, 0.22, 0, 0.55, -L - 0.06, 0.05), 0xffffff);
+  bump(c, 'rear', 'trim', box(0.12, 0.08, 0.2, 0, 0.5, -L - 0.2), C.darkGrey);
   // Roof marker lights (old-school truck charm)
   for (const x of [-0.3, 0, 0.3]) c.parts.add('lamp', rbox(0.1, 0.035, 0.05, x, 1.8, 0.12, 0.015), { color: C.amber });
   // Side steps
   pair((s) => c.parts.add('trim', rbox(0.18, 0.05, 1.1, s * 0.98, 0.42, 0.25, 0.02), { color: C.darkGrey }));
-  mirror(c, loft, 0.85, 1.36, 1.25, C.darkGrey);
-  doorSeams(c, loft, [0.92, 0.1, -0.62], 0.55, 1.27);
-  handle(c, loft, -0.02, 1.15);
-  handle(c, loft, -0.5, 1.15);
   return { wheel: { radius: r, width: 0.32, rim: 0.6, spokes: 6, lug: 0.018, seg: 12, dish: 0.06, face: 0x50555c } };
 }
 
@@ -363,9 +285,9 @@ function monster(c: Ctx): Design {
   onEnd(c, 'trim', rbox(1.1, 0.34, 0.05, 0, 0, 0, 0.04), loft, 0, 1.75, 1, 0x161616);
   for (const y of [1.66, 1.75, 1.84]) onEnd(c, 'chrome', box(1.0, 0.03, 0.03, 0, 0, 0), loft, 0, y, 1, 0xffffff, 0.0);
   pair((s) => roundLamp(c, loft, s * 0.72, 1.78, 1, 0.1, C.headlight));
-  c.parts.add('trim', tube(V(-0.95, 1.32, 2.15), V(0.95, 1.32, 2.15), 0.06), { color: C.darkGrey });
-  pair((s) => c.parts.add('trim', tube(V(s * 0.6, 1.32, 2.15), V(s * 0.6, 1.5, 2.0), 0.05), { color: C.darkGrey }));
-  c.parts.add('trim', tube(V(-0.95, 1.4, -2.1), V(0.95, 1.4, -2.1), 0.06), { color: C.darkGrey });
+  bump(c, 'front', 'trim', tube(V(-0.95, 1.32, 2.15), V(0.95, 1.32, 2.15), 0.06), C.darkGrey);
+  pair((s) => bump(c, 'front', 'trim', tube(V(s * 0.6, 1.32, 2.15), V(s * 0.6, 1.5, 2.0), 0.05), C.darkGrey));
+  bump(c, 'rear', 'trim', tube(V(-0.95, 1.4, -2.1), V(0.95, 1.4, -2.1), 0.06), C.darkGrey);
   c.parts.add('trim', rbox(1.3, 0.1, 0.14, 0, 2.62, 0.15, 0.03), { color: C.black });
   for (let i = 0; i < 4; i++) c.parts.add('lamp', cyl(0.06, 0.03, -0.45 + i * 0.3, 2.62, 0.23, 'z', 8), { color: C.headlight });
   pair((s) => c.parts.add('tail', rbox(0.08, 0.3, 0.05, s * 0.9, 1.8, -2.03, 0.02), { color: C.tail }));
@@ -458,8 +380,8 @@ function buggy(c: Ctx): Design {
   // Nose details: headlights, skid plate, number board
   pair((s) => roundLamp(c, loft, s * 0.36, 0.72, 1, 0.07, C.headlight));
   c.parts.add('trim', rbox(0.8, 0.05, 0.6, 0, 0.58, 1.4, 0.02), { color: C.grey });
-  c.parts.add('trim', tube(V(-0.5, 0.62, 1.8), V(0.5, 0.62, 1.8), 0.035), { color: cage });
-  pair((s) => c.parts.add('trim', tube(V(s * 0.5, 0.62, 1.8), V(s * 0.45, 0.7, 1.58), 0.03), { color: cage }));
+  bump(c, 'front', 'trim', tube(V(-0.5, 0.62, 1.8), V(0.5, 0.62, 1.8), 0.035), cage);
+  pair((s) => bump(c, 'front', 'trim', tube(V(s * 0.5, 0.62, 1.8), V(s * 0.45, 0.7, 1.58), 0.03), cage));
   // Exposed engine (rear)
   c.parts.add('trim', rbox(0.62, 0.36, 0.6, 0, 0.78, -1.15, 0.05), { color: C.engine });
   pair((s) => c.parts.add('trim', rbox(0.2, 0.12, 0.56, s * 0.38, 0.86, -1.15, 0.03, 0), { color: 0x8a1c1c }));
@@ -543,8 +465,8 @@ function sedan(c: Ctx): Design {
     step: 0.28,
   });
   // Chrome everywhere: bumpers, grille with slats, beltline trim, hood ornament
-  c.parts.add('chrome', rbox(1.98, 0.17, 0.2, 0, 0.36, 2.33, 0.07), { color: 0xffffff });
-  c.parts.add('chrome', rbox(1.98, 0.17, 0.2, 0, 0.36, -2.33, 0.07), { color: 0xffffff });
+  bump(c, 'front', 'chrome', rbox(1.98, 0.17, 0.2, 0, 0.36, 2.33, 0.07), 0xffffff);
+  bump(c, 'rear', 'chrome', rbox(1.98, 0.17, 0.2, 0, 0.36, -2.33, 0.07), 0xffffff);
   onEnd(c, 'chrome', rbox(0.95, 0.3, 0.05, 0, 0, 0, 0.05), loft, 0, 0.6, 1, 0xffffff);
   for (let i = -3; i <= 3; i++) onEnd(c, 'trim', box(0.03, 0.24, 0.04, 0, 0, 0), loft, i * 0.12, 0.6, 1, 0x222222, 0.0);
   pair((s) => roundLamp(c, loft, s * 0.7, 0.6, 1, 0.11, C.headlight));
@@ -566,26 +488,53 @@ function sedan(c: Ctx): Design {
   return { wheel: { radius: r, width: 0.22, rim: 0.6, spokes: 0, hubcap: true, whitewall: true, seg: 12, dish: 0.03, face: 0xd7dbe0 } };
 }
 
-const DESIGNS: Record<VehicleKind, (c: Ctx) => Design> = { sports, muscle, pickup, monster, buggy, sedan };
+const DESIGNS: Record<VehicleKind, (c: Ctx) => Design> = { sports, muscle, pickup, monster, buggy, sedan, ...DESIGNS2 };
 
 /** Accent colour (seat trims, coil springs, side flash) per paint. */
 function accentFor(kind: VehicleKind, paint: number): number {
   if (kind === 'buggy') return paint === 0xffeb3b ? 0x1e88e5 : 0xffeb3b;
   if (kind === 'monster') return paint === 0xffb300 ? 0xd62828 : 0xffd54f;
+  if (kind === 'rally') return paint === 0xe8501a ? 0x1e5bd8 : 0xffc400;
+  if (kind === 'trophy') return paint === 0xf4f4f0 ? 0xe53935 : 0xffc400;
+  if (kind === 'atv') return paint === 0x9ccc00 ? 0x2962ff : 0xf4f4f0;
+  if (kind === 'van') return paint === 0xf5f5f5 ? 0x1e88e5 : 0xf4f4f0;
   return contrast(paint);
 }
 
 const BRAKE_ON = new THREE.Color(C.tail).multiplyScalar(1.7);
 const BRAKE_OFF = new THREE.Color(C.tail).multiplyScalar(0.75);
 
+/** Build one end's bumper parts into a pivot group hinged at its +X (left) end, so the right end can drop. */
+function bumperPivot(parts: Parts, mats: Record<MatKey, THREE.Material>, paint: number, end: BumperEnd): THREE.Group | null {
+  const meshes = parts.build(mats, null, paint);
+  if (!meshes.length) return null;
+  const box = new THREE.Box3();
+  for (const m of meshes) {
+    m.geometry.computeBoundingBox();
+    box.union(m.geometry.boundingBox!);
+  }
+  const pivot = new THREE.Group();
+  pivot.name = `bumper-${end}`;
+  pivot.position.set(box.max.x, (box.min.y + box.max.y) / 2, (box.min.z + box.max.z) / 2);
+  for (const m of meshes) {
+    m.name = `bumper-${m.name}`;
+    m.position.copy(pivot.position).negate();
+    pivot.add(m);
+  }
+  return pivot;
+}
+
 /**
- * The ModelBuilder for all six kinds. Plug into createVehicle({ modelBuilder }) (it is the default).
- * Draw calls: paint, glass, trim, chrome, lamp, tail + 2 per wheel + 1 suspension rig.
+ * The ModelBuilder for all sixteen kinds. Plug into createVehicle({ modelBuilder }) (it is the default).
+ * Draw calls: paint, glass, trim, chrome, lamp, tail + bumpers (1–2 per end) + 2 per wheel style + 1 suspension
+ * rig (+1 cracked-windscreen decal once damaged). Materials are the shared, named PBR ones from kit.ts.
  */
 export function buildVehicleModel(spec: VehicleSpec, paint: number, p: VehicleParams): VehicleModel {
   const mats = sharedMaterials();
   const paintMat = paintMaterial();
+  paintMat.name = 'vehicle-paint';
   const tailMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, color: BRAKE_OFF.clone() });
+  tailMat.name = 'vehicle-tail';
   const allMats: Record<MatKey, THREE.Material> = { ...mats, paint: paintMat, tail: tailMat };
 
   const root = new THREE.Group();
@@ -595,21 +544,51 @@ export function buildVehicleModel(spec: VehicleSpec, paint: number, p: VehiclePa
   body.position.y = g0;
   root.add(body);
 
-  const c: Ctx = { spec, p, paint, accent: accentFor(spec.kind, paint), parts: new Parts(), r: p.wheelRadius, wx: p.wheelX, wz: p.wheelZ };
+  const c: Ctx = {
+    spec,
+    p,
+    paint,
+    accent: accentFor(spec.kind, paint),
+    parts: new Parts(),
+    bumpers: { front: new Parts(), rear: new Parts() },
+    r: p.wheelRadius,
+    rr: p.wheelRadiusRear ?? p.wheelRadius,
+    wx: p.wheelX,
+    wz: p.wheelZ,
+  };
   const design = DESIGNS[spec.kind](c);
   for (const m of c.parts.build(allMats, null, paint)) body.add(m);
+  const pivots: Partial<Record<BumperEnd, THREE.Group>> = {};
+  for (const end of ['front', 'rear'] as BumperEnd[]) {
+    const pv = bumperPivot(c.bumpers[end], allMats, paint, end);
+    if (pv) {
+      body.add(pv);
+      pivots[end] = pv;
+    }
+  }
+  const _w = new THREE.Vector3();
+  const damage = new DamageFx(body, pivots, () => {
+    // Lowest wheel bottom in world space = the road under the car.
+    let y = Infinity;
+    for (let i = 0; i < wheels.length; i++) {
+      wheels[i].getWorldPosition(_w);
+      y = Math.min(y, _w.y - (i < 2 ? p.wheelRadius : (p.wheelRadiusRear ?? p.wheelRadius)));
+    }
+    return Number.isFinite(y) ? y : 0;
+  });
 
   // Wheels: vehicle positions/rotates each `wheels[i]`; right-side wheels flip so the rim faces out.
   const wheels: THREE.Object3D[] = [];
   const wheelGeos: THREE.BufferGeometry[] = [];
   const styles = [design.wheel, design.rearWheel ?? design.wheel];
   const built = styles.map((st) => buildWheel(st, mats));
+  const restY = [0, 1, 2, 3].map((i) => wheelCentreY(p, i >= 2));
   for (let i = 0; i < 4; i++) {
     const w = new THREE.Group();
     const g = built[i < 2 ? 0 : 1].group.clone();
     if (i % 2 === 1) g.rotation.y = Math.PI;
     w.add(g);
-    w.position.set(i % 2 === 0 ? p.wheelX : -p.wheelX, wheelCentreY(p), i < 2 ? p.wheelZ : -p.wheelZ);
+    w.position.set(i % 2 === 0 ? p.wheelX : -p.wheelX, restY[i], i < 2 ? p.wheelZ : -p.wheelZ);
     root.add(w);
     wheels.push(w);
   }
@@ -624,12 +603,11 @@ export function buildVehicleModel(spec: VehicleSpec, paint: number, p: VehiclePa
 
   // Body motion: exaggerate the physics roll/pitch a little from the wheel travel so the
   // suspension reads clearly to a kid (wheels stay put, the body leans and dips).
-  const restY = wheelCentreY(p);
   let roll = 0;
   let pitch = 0;
   let braking = false;
   const animate = (dt: number, state?: VehicleState): void => {
-    const d = (i: number) => wheels[i].position.y - restY;
+    const d = (i: number) => wheels[i].position.y - restY[i];
     const left = (d(0) + d(2)) / 2;
     const right = (d(1) + d(3)) / 2;
     const front = (d(0) + d(1)) / 2;
@@ -641,6 +619,7 @@ export function buildVehicleModel(spec: VehicleSpec, paint: number, p: VehiclePa
     pitch += (tPitch - pitch) * k;
     body.rotation.set(-pitch, 0, roll);
     rig?.update();
+    damage.update(dt, state?.speed ?? 0);
     if (state) {
       const b = state.input.brake > 0.1 && state.speed > 0.3;
       if (b !== braking) {
@@ -654,7 +633,9 @@ export function buildVehicleModel(spec: VehicleSpec, paint: number, p: VehiclePa
     root,
     wheels,
     animate,
+    applyDamage: (hit, total) => damage.apply(hit, total),
     dispose() {
+      damage.dispose();
       paintMat.dispose();
       tailMat.dispose();
       body.traverse((o) => {

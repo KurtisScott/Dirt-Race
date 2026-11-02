@@ -283,9 +283,9 @@ check(
   `solo pace Hard < Normal < Easy (Easy eases off when far ahead) (${cpuTimes.hard?.toFixed(1)} s vs ${cpuTimes.easy?.toFixed(1)} s; normal ${cpuTimes.normal?.toFixed(1)} s)`,
 );
 
-// -------------------------------------------------------------- 1b. every vehicle can get round on Normal
+// -------------------------------------------------------------- 1b. every vehicle (all 16) can get round on Normal
 console.log('\n=== computer on Normal in every vehicle (player idle, 100 s timer) ===');
-for (const kind of ['sports', 'muscle', 'pickup', 'monster', 'buggy', 'sedan'] as VehicleKind[]) {
+for (const kind of Object.keys(VEHICLES) as VehicleKind[]) {
   const r = runRace({
     cpuDifficulty: 'normal',
     player: 'idle',

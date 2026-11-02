@@ -30,10 +30,10 @@ export interface SpinOptions {
 
 const STAT_ROWS: { key: keyof VehicleStats; label: string }[] = [
   { key: 'topSpeed', label: 'Top speed' },
-  { key: 'accel', label: 'Acceleration' },
+  { key: 'accel', label: 'Accel' },
   { key: 'grip', label: 'Grip' },
   { key: 'offroad', label: 'Off-road' },
-  { key: 'hillClimb', label: 'Hill climb' },
+  { key: 'jump', label: 'Jump' },
 ];
 
 /**
@@ -52,9 +52,11 @@ export function runVehicleSpin(root: HTMLElement, opts: SpinOptions = {}): Promi
   const player = opts.force?.player ?? randomVehicle(rand);
   const cpu = opts.force?.cpu ?? randomVehicle(rand);
 
-  // Thumbnails: every kind in every paint (the reel shows varied colours), rendered once and cached.
-  const all = VEHICLE_KINDS.flatMap((kind) => VEHICLES[kind].paints.map((paint) => ({ kind, paint })));
-  const thumbs = new Map(renderVehicleThumbnails(all).map((t) => [`${t.kind}:${t.paint}`, t.url]));
+  // Thumbnails: one random paint per kind for the reel filler cards plus the two picks (16 kinds × 3 paints
+  // would be 48 renders on the first spin). Rendered once and cached, so later spins add only a few.
+  const reelPaint = new Map(VEHICLE_KINDS.map((kind) => [kind, VEHICLES[kind].paints[Math.floor(rand() * 3)]]));
+  const need = [...VEHICLE_KINDS.map((kind) => ({ kind, paint: reelPaint.get(kind)! })), { kind: player.spec.kind, paint: player.paint }, { kind: cpu.spec.kind, paint: cpu.paint }];
+  const thumbs = new Map(renderVehicleThumbnails(need).map((t) => [`${t.kind}:${t.paint}`, t.url]));
   const thumb = (kind: VehicleKind, paint: number) => thumbs.get(`${kind}:${paint}`) ?? '';
 
   const el = document.createElement('div');
@@ -73,8 +75,8 @@ export function runVehicleSpin(root: HTMLElement, opts: SpinOptions = {}): Promi
   root.appendChild(el);
 
   const reels: Record<RacerId, Reel> = {
-    player: new Reel(el.querySelector('[data-reel="player"]')!, thumb, rand),
-    cpu: new Reel(el.querySelector('[data-reel="cpu"]')!, thumb, rand),
+    player: new Reel(el.querySelector('[data-reel="player"]')!, thumb, rand, (k) => reelPaint.get(k)!),
+    cpu: new Reel(el.querySelector('[data-reel="cpu"]')!, thumb, rand, (k) => reelPaint.get(k)!),
   };
 
   const go = el.querySelector<HTMLButtonElement>('[data-tap="spin-go"]')!;
@@ -148,6 +150,7 @@ class Reel {
     private el: HTMLElement,
     private thumb: (k: VehicleKind, p: number) => string,
     private rand: () => number,
+    private paintFor: (k: VehicleKind) => number,
   ) {
     this.strip = el.querySelector('.vspin-strip')!;
   }
@@ -157,15 +160,16 @@ class Reel {
   }
 
   spin(target: SpinPick, ms: number, onTick: () => void, onDone: () => void): void {
-    // Build a strip: ~3 shuffled laps then the target card last.
+    // Build a strip: ~20 random cards then the target card last.
     const cards: { kind: VehicleKind; paint: number }[] = [];
-    const laps = 3;
+    // About 20 cards scroll past (≈ the same speed as the original 3 laps of 6 kinds).
+    const count = 20;
     let last: VehicleKind | null = null;
-    for (let i = 0; i < laps * VEHICLE_KINDS.length; i++) {
+    for (let i = 0; i < count; i++) {
       let kind = VEHICLE_KINDS[Math.floor(this.rand() * VEHICLE_KINDS.length)];
       if (kind === last) kind = VEHICLE_KINDS[(VEHICLE_KINDS.indexOf(kind) + 1) % VEHICLE_KINDS.length];
       last = kind;
-      cards.push({ kind, paint: VEHICLES[kind].paints[Math.floor(this.rand() * 3)] });
+      cards.push({ kind, paint: this.paintFor(kind) });
     }
     if (cards[cards.length - 1].kind === target.spec.kind) cards.pop();
     cards.push({ kind: target.spec.kind, paint: target.paint });

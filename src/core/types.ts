@@ -19,8 +19,24 @@ export interface SurfaceProps {
   rolling: number;
 }
 
-/** The six vehicle kinds (SPEC "Vehicles"). */
-export type VehicleKind = 'sports' | 'muscle' | 'pickup' | 'monster' | 'buggy' | 'sedan';
+/** The sixteen vehicle kinds (SPEC "Vehicles" + Round 2 item 6). */
+export type VehicleKind =
+  | 'sports'
+  | 'muscle'
+  | 'pickup'
+  | 'monster'
+  | 'buggy'
+  | 'sedan'
+  | 'rally'
+  | 'hatch'
+  | 'lifted'
+  | 'jeep'
+  | 'suv'
+  | 'van'
+  | 'bus'
+  | 'tractor'
+  | 'atv'
+  | 'trophy';
 
 /** Stats on the 1–5 scale used by the spin screen. */
 export interface VehicleStats {
@@ -28,7 +44,12 @@ export interface VehicleStats {
   accel: number;
   grip: number;
   offroad: number;
-  hillClimb: number;
+  /**
+   * End-jump ability (Round 2: the long jump replaced the bonus hill). Shown on the spin screen. Distance
+   * comes from launch speed (top speed / accel); this stat also sets how well the car flies and lands
+   * (air levelling, hard-landing damage tolerance). See vehicles/params.ts.
+   */
+  jump: number;
 }
 
 /** Per-frame driving intent, produced by a human (input module) or the AI. */

@@ -12,7 +12,7 @@ const byStat = (table: readonly number[], stat: number): number => {
 };
 
 /**
- * Bonus-hill tuning by hill-climb stat (1..5). The hill tops out at 38.5° of loose gravel, which needs a
+ * Steep-slope tuning by the hidden `spec.climb` value (1..5; it was the visible "Hill climb" stat before Round 2). The old bonus hill tops out at 38.5° of loose gravel, which needs a
  * traction coefficient of ≈ 0.80 + rolling resistance (≈ 0.83–0.85 in total) to keep moving.
  *  - CLIMB_TRACTION: max drive force on steep loose slopes = mass·g·cos(slope)·μ. Sedan (1) stalls about
  *    40% up; sports (2) sits right at the limit (needs a run-up); muscle/buggy (3) have a thin margin;
@@ -24,6 +24,16 @@ const byStat = (table: readonly number[], stat: number): number => {
  */
 export const CLIMB_TRACTION = [0.62, 0.835, 0.875, 0.96, 1.05] as const;
 export const CLIMB_POWER = [14, 18, 20, 28, 36] as const;
+
+/**
+ * Jump stat (1..5) → how the car flies and lands. Jump *distance* is set by launch speed (top speed and
+ * acceleration over the run-up; mass doesn't change a ballistic arc), so the course's end ramp is tuned
+ * on speed. The jump stat adds what happens in the air and on touchdown:
+ *  - AIR_CONTROL: torque factor that levels pitch/roll in the air (lands on the wheels more often).
+ *  - LANDING_TOLERANCE (m/s downward at touchdown): harder landings than this cause damage.
+ */
+export const AIR_CONTROL = [0.45, 0.55, 0.65, 0.8, 0.95] as const;
+export const LANDING_TOLERANCE = [8, 8.8, 9.6, 10.5, 11.5] as const;
 
 /**
  * Stats (1–5) → physics. This is the single place to tune how vehicles feel.
@@ -43,15 +53,16 @@ export function paramsFromSpec(spec: VehicleSpec): VehicleParams {
   const acc = n(s.accel);
   const grip = n(s.grip);
   const off = n(s.offroad);
-  const climb = n(s.hillClimb);
+  const climb = n(spec.climb);
+  const tune = spec.tune ?? {};
 
-  // Mass from bounding volume: pickup ≈ 1900 kg, sports ≈ 1150, buggy ≈ 1000, monster ≈ 2000.
-  const volume = length * width * height;
+  // Mass from bounding volume: pickup ≈ 1900 kg, sports ≈ 1150, buggy ≈ 1000, monster ≈ 2000, bus 3000 (cap).
+  const volume = length * width * height * (tune.massScale ?? 1);
   const mass = Math.round(Math.min(3000, Math.max(800, 90 * volume + 300)));
 
   const wheelRadius = spec.wheelRadius;
   // Off-road vehicles get longer, softer suspension; road cars short and stiff.
-  const suspensionRest = lerp(0.18, 0.45, off) + (spec.kind === 'monster' ? 0.25 : 0);
+  const suspensionRest = lerp(0.18, 0.45, off) + (tune.extraRest ?? 0);
   const suspensionTravel = suspensionRest * 0.85;
   const stiffness = lerp(48, 26, off); // ω ≈ 2.2–1.6 Hz
   const crit = Math.sqrt(stiffness);
@@ -61,17 +72,18 @@ export function paramsFromSpec(spec: VehicleSpec): VehicleParams {
     mass,
     halfExtents: { x: width / 2, y: halfY, z: length / 2 },
     // Low centre of mass is our main anti-flip tool. Grandma's sedan: very low (SPEC: never flips).
-    comDrop: halfY * (spec.kind === 'sedan' ? 1.6 : spec.kind === 'monster' ? 1.4 : 1.0),
+    comDrop: halfY * (tune.comDrop ?? 1),
     wheelRadius,
-    wheelX: width / 2 - 0.12 + (spec.kind === 'monster' ? 0.25 : 0),
-    wheelZ: length / 2 - Math.max(0.55, wheelRadius * 1.25),
+    wheelRadiusRear: spec.rearWheelRadius,
+    wheelX: width / 2 - 0.12 + (tune.wheelXAdd ?? 0),
+    wheelZ: tune.wheelZ ?? length / 2 - Math.max(0.55, wheelRadius * 1.25),
     wheelY: -halfY * 0.4,
     suspensionRest,
     suspensionTravel,
     suspensionStiffness: stiffness,
     // Buggy: under-damped on purpose (SPEC: light and bouncy).
-    suspensionCompression: crit * (spec.kind === 'buggy' ? 0.3 : 0.55),
-    suspensionRelaxation: crit * (spec.kind === 'buggy' ? 0.4 : 0.75),
+    suspensionCompression: crit * (tune.bouncy ? 0.3 : 0.55),
+    suspensionRelaxation: crit * (tune.bouncy ? 0.4 : 0.75),
     maxSuspensionForce: mass * 9.81 * 3,
     frictionSlip: lerp(1.35, 2.1, grip),
     // Lower side stiffness = more slide (muscle car). 1 is Rapier's default.
@@ -87,10 +99,12 @@ export function paramsFromSpec(spec: VehicleSpec): VehicleParams {
     offroad: off,
     climbBoost: lerp(0.0, 1.6, climb),
     // Traction limit and crawl power on steep loose slopes (see CLIMB_TRACTION / CLIMB_POWER above).
-    climbTraction: byStat(CLIMB_TRACTION, s.hillClimb),
-    climbPower: byStat(CLIMB_POWER, s.hillClimb),
-    antiRoll: spec.kind === 'sedan' ? 9 : spec.kind === 'buggy' ? 3 : 5,
-    airControl: 0.6,
+    climbTraction: byStat(CLIMB_TRACTION, spec.climb),
+    climbPower: byStat(CLIMB_POWER, spec.climb),
+    antiRoll: tune.antiRoll ?? 5,
+    airControl: byStat(AIR_CONTROL, s.jump),
+    landingTolerance: byStat(LANDING_TOLERANCE, s.jump),
+    damageScale: spec.toughness ?? 1,
     linearDamping: 0.02,
     angularDamping: 0.6,
   };

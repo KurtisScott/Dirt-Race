@@ -9,7 +9,7 @@ src/
   style.css        global CSS: iOS lock-down, screens, touch controls, rotate overlay
   core/            engine services every module may import
   input/           tilt, touch pedals/buttons, keyboard → DriveInput
-  vehicles/        catalog (6 kinds), stats → physics params, ray-cast vehicle, models
+  vehicles/        catalog (16 kinds), stats → physics params, ray-cast vehicle, damage, models
   world/           World interface, TrackPath, surfaces, test ground (M1), real track (TODO)
   race/            race state machine, rules, checkpoints, scoring, session score
   ai/              computer driver → DriveInput
@@ -87,10 +87,12 @@ preventBrowserGestures()             // call once at boot
 createVehicle({ physics, parent?, surfaces, spec, paint, racer, spawn, modelBuilder?, paramOverrides? }): Vehicle
 interface Vehicle extends VehicleState, System {
   input: DriveInput;  reset(at: SpawnPoint); setFrozen(b); object; dispose();
+  addDamage(amount %, localDir?)    // tests/debug or an outside source; normally damage is detected internally
 }
 interface VehicleState {          // what race/ai/ui/audio/fx read
   racer, spec, paint, speed (m/s, signed), position, quaternion, forward (interpolated render pose),
   rpm (0..1), steerAngle, input, wheelsOnGround, airTime, surface, flipped,
+  damage (0..100 %, Round 2),
   wheels[4]: { contact, point, surface, slip 0..1, compression 0..1 }   // FL, FR, RL, RR
 }
 VEHICLES, VEHICLE_KINDS, randomVehicle(rand?) → { spec, paint }
@@ -99,13 +101,16 @@ paramsFromSpec(spec) → VehicleParams     // the ONE place stats become physics
 
 * Physics: Rapier `DynamicRayCastVehicleController`. Chassis local axes are **+Z forward, +Y up, +X left**. The chassis is a round-cuboid plus a massless roof collider. Mass properties are set explicitly with a lowered centre of mass, CCD is on, and the car never sleeps.
 * Assists in `vehicle.ts`: speed-sensitive and rate-limited steering, roll PD assist (strongest for the sedan), air levelling, surface grip/drag/rolling resistance (reduced by the off-road stat), hill-climb torque boost when nose-up, coasting decel, hold-still brake, brake-to-reverse below 0.6 m/s.
-* Emits `vehicle:surface`, `vehicle:landed {impact}`, `vehicle:flipped` (on side/roof and slow for 1.5 s), `vehicle:reset`.
+* Emits `vehicle:surface`, `vehicle:landed {impact}`, `vehicle:flipped` (on side/roof and slow for 1.5 s), `vehicle:reset`, and (Round 2) `vehicle:collision` on chassis hits and `car:damage {racer, damage, delta}`.
+* **Catalog (Round 2: 16 kinds).** `VehicleSpec.stats` = Top speed, Accel, Grip, Off-road, **Jump** (1–5, shown on the spin screen). `spec.climb` is the hidden old "Hill climb" value (still drives the steep-slope limits). Optional per-spec knobs replace the old `kind === …` switches: `tune {comDrop, extraRest, wheelXAdd, bouncy, antiRoll, wheelZ, massScale}`, `rearWheelRadius` (tractor: rear mounts are raised by the radius difference), `engineZ` (where damage smoke comes from), `toughness` (damage multiplier). Jump stat → `airControl` and `landingTolerance` (hard-landing damage threshold) via `AIR_CONTROL` / `LANDING_TOLERANCE` in params.ts; jump *distance* comes from launch speed.
+* **Damage (`damage.ts` rules, `vehicle.ts` detection, `models/damageFx.ts` visuals).** 0–100 % per car, never repaired during a race (Reset keeps it); each race builds fresh cars. Detection: Rapier contact-force events on the chassis/roof colliders (approach speed along the contact normal, from the pre-step velocity; the other car's pre-step velocity for car-vs-car) against static obstacles, terrain walls (ground contacts with a mostly horizontal normal) and the other car; debris (hay, cones), animals, sensors and potholes are ignored. Hard landings above `landingTolerance`. `animal:bump` with `damaging: true` (optional field, emitted by world) adds damage scaled by `speed`. Driving effect: `performanceFactor(damage)` scales top speed and engine force (1 → 0.75), plus a slight steering pull; the car never stops. Visuals (`VehicleModel.applyDamage(hit, total)`): dents (vertex displacement around the hit, capped), scratches + grime (vertex colours), cracked windscreen decal (2 stages, shared DataTexture materials), bumpers on pivots that hang (30 %+) and fall off onto the road (62 %+). Geometry is edited in place; the crack decal is the only per-car addition (disposed with the car); fallen bumpers are removed in `dispose()`.
 * **Models** (`model.ts`): implement `ModelBuilder = (spec, paint, params) => VehicleModel {root, wheels[4], animate?(dt, state?), dispose}`. The root sits at the chassis collider centre. Each wheel is centred on its axle with the axle along local X; the vehicle positions and rotates it. The default builder is now `buildVehicleModel` (`models/build.ts`): six procedural models, 3.1k–3.6k triangles each, 9–10 draw calls (paint, glass, trim, chrome, lamp, tail, 2 per wheel style, 1 instanced suspension rig). `buildPlaceholderModel` is still exported.
+  * Round 2 file split: `models/common.ts` (shared `Ctx`/`Design` + helpers: `bump()` for bumper parts, `flare`, `spareTyre`, `spotLamp`, `flatLamp`, `sidePane`, `pair`, `onEnd`, …), `models/build.ts` (the original six + `buildVehicleModel`, `pickupBody()` reused by the lifted pickup), `models/designs2.ts` (rally, hatch, lifted, jeep, suv, van, bus, tractor, atv, trophy), `models/damageFx.ts`. Bumpers are built per end into a pivot group (`bumper-front` / `bumper-rear`) hinged at the +X end. Shared materials are named `vehicle-glass|trim|chrome|lamp`, per-car `vehicle-paint` / `vehicle-tail`.
   * `models/loft.ts`: lofted bodies (side profile + plan width + 9-point cross-section with tumblehome, fender bulges and wheel arches). `models/kit.ts`: shared materials (procedural env map; paint is `MeshPhysicalMaterial` with clearcoat on High only), wheel builder, part merging. `models/rig.ts`: shocks/arms/axles as one `InstancedMesh` that follows the wheels.
   * Body motion: `animate` leans and dips the body from wheel travel (on top of the physics pose) and lights the brake lights when `state.input.brake` is held while moving forward.
   * `renderVehicleThumbnails(items?, size?) → {kind, paint, url}[]`: PNG data URLs of the real models (3/4 view, transparent). Uses one short-lived WebGL context, cached per kind and paint.
   * Dev only: `src/vehicles/dev/preview.html?kind=sports|…|all|thumbs&view=34|side|rear|top&q=low|medium|high`. `node scripts/vehicle-shots.mjs [each|all|<kind>] [view] [quality]` writes `screenshots/vehicle-<kind>.png`.
-* `npm run physics-test` drives all 6 vehicles headless (settle, 0-60, top speed, full-lock turn, slalom, braking, reverse, coast, ramp jump) and fails on regressions. It then runs the **personality checks** with the real `SURFACES` table: speed per surface, a 20°/28°/36° gravel bonus-hill climb, a 36° hill start, a suspension bounce test and a log crawl. Run only those with `npx tsx scripts/physics-test.ts personality`. Run it after tuning.
+* `npm run physics-test` drives all 16 vehicles headless (sections: `npx tsx scripts/physics-test.ts personality|jump|damage|<kind>`; `jump` prints launch speed / distance off a 15° ramp per vehicle, `damage` checks thresholds, persistence through Reset, top-speed loss, steering pull and the visuals). Originally: all 6 vehicles headless (settle, 0-60, top speed, full-lock turn, slalom, braking, reverse, coast, ramp jump) and fails on regressions. It then runs the **personality checks** with the real `SURFACES` table: speed per surface, a 20°/28°/36° gravel bonus-hill climb, a 36° hill start, a suspension bounce test and a log crawl. Run only those with `npx tsx scripts/physics-test.ts personality`. Run it after tuning.
 * Optional `VehicleParams.climbTraction` (added in vehicles M2): on steep (> 6°) non-flat ground, engine force is capped at `mass·g·cos(slope)·climbTraction·(surfaceGrip/gravelGrip)`. It comes from the hill-climb stat, and tyre friction is raised to match so the stat, not Rapier wheelspin, decides who climbs. Optional `VehicleParams.climbPower` (W/kg) additionally caps drive force at `mass·climbPower/speed` on slopes over 14° (full at 20°), which sets the crawl speed up the bonus hill. Both come from the per-stat tables `CLIMB_TRACTION` / `CLIMB_POWER` in `vehicles/params.ts`.
 * Surface top-speed caps live in `SURFACE_SPEED_PENALTY` (vehicle.ts), scaled by `1 − offroad`. The top-speed fade is compensated for aero, rolling resistance and damping, so flat-asphalt top speed equals `params.topSpeed`.
 
@@ -232,8 +237,9 @@ Race UI (`ui/raceHud.ts`):
   `race.countdownLeftS`, so it stays in sync with sim time), "Resetting…", and short messages (lead change,
   win, summit, time's up).
 * `ResultsScreen` (`ui.results`): winner, how it was decided, a card per racer (vehicle, distance bar, finish time or
-  distance reached, summit bonus, points), session score, plus RACE AGAIN / Menu (`handlers.onRaceAgain`, `onResultsMenu`).
+  distance reached, summit bonus, damage % (`RacerResult.damage`, Round 2), points), session score, plus RACE AGAIN / Menu (`handlers.onRaceAgain`, `onResultsMenu`).
   CSS confetti + bouncing trophy when Brooks wins (gold stars for a summit bonus).
+* `DamageMeter` (`ui/damageMeter.ts`, Round 2): car icon above the speedometer, green → yellow → orange → red, with the %. Purely event-driven (`car:damage` for the player, `phase:changed`, `app:paused`); created with one line in main.ts.
 * Pause screen adds **Computer: Easy / Normal / Hard** (takes effect from the next race) and **Speed in: mph / km/h**
   (`settings.speedUnit`, default mph; results distances are shown in feet or metres to match).
 
@@ -244,7 +250,7 @@ runVehicleSpin(uiRoot, { rand?, force?: {player?, cpu?}, playerName?, cpuName?, 
   → Promise<{ player: {spec, paint}, cpu: {spec, paint} }>   // resolves when GO is tapped
 ```
 
-It adds a full-screen overlay (`[data-screen="spin"]`) with two slot-machine reels of rendered model cards. Brooks's reel lands first, then the Computer's. Stat bars (Top speed, Acceleration, Grip, Off-road, Hill climb) fill as each reel lands. GO (`[data-tap="spin-go"]`) appears after both reels stop, and the overlay removes itself on tap. Bus events: `spin:tick {racer}` (each card passing, for reel clatter), `spin:land {racer, kind}` (both consumed by audio), and `spin:done {player, cpu}`. **Wired into the race flow** in `main.ts`: `RaceFlowDeps.spin = pickVehicles` (random picks), and `showSpin = (picks) => showVehicleSpin(uiRoot, picks)` plays the reels landing on exactly those picks and resolves on GO. CSS classes are prefixed `vspin-`. Dev page: `src/ui/spin/dev.html?seed=7&speed=1`. `node scripts/spin-shot.mjs` checks the spin screen and writes `screenshots/spin.png`.
+It adds a full-screen overlay (`[data-screen="spin"]`) with two slot-machine reels of rendered model cards. Brooks's reel lands first, then the Computer's. Stat bars (Top speed, Accel, Grip, Off-road, Jump) fill as each reel lands. Each spin renders (and caches) one random paint per kind for the filler cards plus the two picks (≈18 thumbnails), not all 48. GO (`[data-tap="spin-go"]`) appears after both reels stop, and the overlay removes itself on tap. Bus events: `spin:tick {racer}` (each card passing, for reel clatter), `spin:land {racer, kind}` (both consumed by audio), and `spin:done {player, cpu}`. **Wired into the race flow** in `main.ts`: `RaceFlowDeps.spin = pickVehicles` (random picks), and `showSpin = (picks) => showVehicleSpin(uiRoot, picks)` plays the reels landing on exactly those picks and resolves on GO. CSS classes are prefixed `vspin-`. Dev page: `src/ui/spin/dev.html?seed=7&speed=1`. `node scripts/spin-shot.mjs` checks the spin screen and writes `screenshots/spin.png`.
 
 
 ## audio/
@@ -287,6 +293,7 @@ Tests: `npm run audio-test` (in `npm test`) renders every generator in Node and 
   * `skidMarks.ts` `SkidMarks`: one ring-buffer mesh (600 quads) on asphalt when `wheel.slip > 0.4`, fading in quarters.
   * Blob shadows (one small quad per car) only when real shadows are off (Low).
   * Events: `vehicle:landed`, `obstacle:hit`, `animal:bump`, `race:finish`, `race:summit`, `quality:changed`; cleared on `phase:changed` → spin/title.
+  * Damage smoke (Round 2): from 35 % damage each tracked car puffs smoke from `spec.engineZ` (white → grey at 55 % → black at 85 %+), rate rising with damage, in the same particle pool.
 
 ## Debug hooks
 

@@ -61,6 +61,24 @@ function show(kind: VehicleKind, paintIdx: number, x = 0, z = 0) {
   m.wheels[1].rotation.set(0, 0.3, 0, 'YXZ');
   m.root.traverse((o) => ((o as THREE.Mesh).isMesh ? ((o as THREE.Mesh).castShadow = true) : 0));
   scene.add(m.root);
+  // ?damage=N: hit the car from a few directions until it reaches N% (dents, cracks, bumpers, grime).
+  const dmg = Number(q.get('damage') ?? 0);
+  if (dmg > 0) {
+    const dirs = [
+      { x: 0.15, y: -0.1, z: 1 },
+      { x: 1, y: 0, z: 0.3 },
+      { x: -0.3, y: 0, z: -1 },
+      { x: -1, y: 0.1, z: 0.4 },
+      { x: 0.2, y: 0, z: 1 },
+    ];
+    let total = 0;
+    for (let i = 0; total < dmg; i++) {
+      const a = Math.min(dmg - total, 14);
+      total += a;
+      m.applyDamage?.({ dir: dirs[i % dirs.length], amount: a }, total);
+    }
+    for (let i = 0; i < 120; i++) m.animate?.(1 / 60);
+  }
   m.animate?.(0.016);
   const parts: Record<string, number> = {};
   m.root.traverse((o) => {
@@ -80,20 +98,21 @@ if (kind === 'thumbs') {
   document.body.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:8px;padding:8px">' + thumbs.map((t) => `<img src="${t.url}" style="background:#345">`).join('') + '</div>';
 } else if (kind === 'all') {
   VEHICLE_KINDS.forEach((k, i) => {
-    const r = show(k, i, (i % 3) * 4.2 - 4.2, Math.floor(i / 3) * -6.5 + 3);
+    const r = show(k, i, (i % 4) * 5.2 - 7.8, Math.floor(i / 4) * -9 + 13.5);
     result[k] = r.tris;
   });
-  camera.position.set(14, 9, 16);
+  camera.position.set(24, 22, 34);
   camera.lookAt(0, 0.5, 0);
 } else {
   const r = show(kind, Number(q.get('paint') ?? 0));
   result[kind] = r.tris;
-  const L = Math.max(VEHICLES[kind].size.length, 4);
+  const L = Math.max(VEHICLES[kind].size.length, VEHICLES[kind].size.height * 1.6, 4);
   if (view === 'side') camera.position.set(L * 2.4, 1.2, 0);
   else if (view === 'rear') camera.position.set(-L * 1.4, L * 0.7, -L * 1.8);
   else if (view === 'top') camera.position.set(0.01, L * 3, 0);
   else camera.position.set(L * 1.45, L * 0.62, L * 1.75);
-  camera.lookAt(0, kind === 'monster' ? 1.3 : 0.65, 0);
+  const H = VEHICLES[kind].size.height;
+  camera.lookAt(0, kind === 'monster' ? 1.3 : Math.max(0.65, H * 0.45), 0);
 }
 info.textContent = Object.entries(result).map(([k, t]) => `${k}: ${t} tris`).join('  ');
 renderer.render(scene, camera);

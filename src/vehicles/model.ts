@@ -14,7 +14,20 @@ export interface VehicleModel {
    * lights). `state` (optional, added in vehicles M2) is the owning vehicle.
    */
   animate?(dt: number, state?: VehicleState): void;
+  /**
+   * Optional (Round 2): show a damaging hit (dents, scratches, cracked glass, loose bumpers). `total` is
+   * the car's damage after this hit (0..100). Must not allocate GPU resources per hit (geometry is
+   * edited in place) so Race Again doesn't leak.
+   */
+  applyDamage?(hit: DamageHit, total: number): void;
   dispose(): void;
+}
+
+export interface DamageHit {
+  /** Unit direction from the chassis centre towards the hit, chassis space (+Z forward, +X left, +Y up). */
+  dir: { x: number; y: number; z: number };
+  /** Damage this hit added (%). */
+  amount: number;
 }
 
 export type ModelBuilder = (spec: VehicleSpec, paint: number, params: VehicleParams) => VehicleModel;

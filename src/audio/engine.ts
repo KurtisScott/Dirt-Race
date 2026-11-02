@@ -82,6 +82,67 @@ export const ENGINE_PROFILES: Record<EngineSoundId, EngineProfile> = {
     pulseHz: 260, decay: 0.009, sub: 0.3, rumble: 0.15, whine: 0.05, whineH: 5, noise: 0.14, noiseHz: 1300,
     misfire: 0.09, lpBase: 650, lpRpm: 1900, lpThrottle: 900, gain: 0.85, wobble: 0.035, backfire: 0.6,
   },
+  // ---- Round 2 vehicles (same synth, new parameters)
+  // Rally car: turbo four with a whistling turbo and crackly anti-lag pops on lift-off.
+  rally: {
+    baseHz: 44, maxRate: 4.6, fires: [1, 0.8, 0.95, 0.75], jitter: 0.02, ampJitter: 0.15,
+    pulseHz: 380, decay: 0.007, sub: 0.3, rumble: 0.1, whine: 0.2, whineH: 9, noise: 0.1, noiseHz: 2600,
+    misfire: 0, lpBase: 800, lpRpm: 4200, lpThrottle: 1800, gain: 0.8, wobble: 0, backfire: 0.7,
+  },
+  // Hot hatch: rev-happy buzzy four.
+  hatch: {
+    baseHz: 50, maxRate: 4.8, fires: [1, 0.85, 0.95, 0.8], jitter: 0.015, ampJitter: 0.1,
+    pulseHz: 520, decay: 0.006, sub: 0.25, rumble: 0.06, whine: 0.1, whineH: 4, noise: 0.08, noiseHz: 3000,
+    misfire: 0, lpBase: 950, lpRpm: 4600, lpThrottle: 1600, gain: 0.75, wobble: 0, backfire: 0.2,
+  },
+  // Lifted pickup: big lumpy V8 with a lopey cam.
+  lifted: {
+    baseHz: 36, maxRate: 3.0, fires: [1, 0.5, 0.95, 0.45, 1, 0.55, 0.9, 0.4], jitter: 0.06, ampJitter: 0.3,
+    pulseHz: 120, decay: 0.018, sub: 0.65, rumble: 0.7, whine: 0.02, whineH: 3, noise: 0.09, noiseHz: 600,
+    misfire: 0, lpBase: 380, lpRpm: 1900, lpThrottle: 1100, gain: 1.0, wobble: 0, backfire: 0.2,
+  },
+  // Classic 4x4: low, even straight-six.
+  jeep: {
+    baseHz: 34, maxRate: 2.9, fires: [1, 0.9, 0.95, 0.88, 1, 0.9], jitter: 0.03, ampJitter: 0.15,
+    pulseHz: 200, decay: 0.012, sub: 0.45, rumble: 0.25, whine: 0.03, whineH: 5, noise: 0.1, noiseHz: 900,
+    misfire: 0, lpBase: 450, lpRpm: 2000, lpThrottle: 1000, gain: 0.9, wobble: 0, backfire: 0.1,
+  },
+  // Family SUV: smooth, quiet V6.
+  suv: {
+    baseHz: 42, maxRate: 3.4, fires: [1, 0.92, 0.98, 0.9, 1, 0.93], jitter: 0.01, ampJitter: 0.06,
+    pulseHz: 300, decay: 0.009, sub: 0.4, rumble: 0.1, whine: 0.06, whineH: 6, noise: 0.05, noiseHz: 1500,
+    misfire: 0, lpBase: 500, lpRpm: 2400, lpThrottle: 1000, gain: 0.75, wobble: 0, backfire: 0,
+  },
+  // Delivery van: clattery diesel four.
+  van: {
+    baseHz: 30, maxRate: 2.7, fires: [1, 0.9, 0.95, 0.85], jitter: 0.03, ampJitter: 0.2,
+    pulseHz: 900, decay: 0.004, sub: 0.4, rumble: 0.3, whine: 0.04, whineH: 7, noise: 0.2, noiseHz: 2200,
+    misfire: 0, lpBase: 600, lpRpm: 1800, lpThrottle: 1200, gain: 0.85, wobble: 0, backfire: 0,
+  },
+  // School bus: deep, slow diesel six with a turbo whine.
+  bus: {
+    baseHz: 26, maxRate: 2.3, fires: [1, 0.85, 0.95, 0.8, 1, 0.9], jitter: 0.03, ampJitter: 0.2,
+    pulseHz: 700, decay: 0.006, sub: 0.65, rumble: 0.55, whine: 0.08, whineH: 11, noise: 0.18, noiseHz: 1800,
+    misfire: 0, lpBase: 350, lpRpm: 1400, lpThrottle: 1000, gain: 1.0, wobble: 0, backfire: 0,
+  },
+  // Tractor: slow putt-putt three-cylinder diesel with a slight wobble.
+  tractor: {
+    baseHz: 18, maxRate: 2.2, fires: [1, 0.7, 0.85], jitter: 0.05, ampJitter: 0.3,
+    pulseHz: 160, decay: 0.03, sub: 0.5, rumble: 0.7, whine: 0.02, whineH: 3, noise: 0.15, noiseHz: 900,
+    misfire: 0, lpBase: 300, lpRpm: 1100, lpThrottle: 900, gain: 1.05, wobble: 0.015, backfire: 0,
+  },
+  // Quad bike: buzzy single-cylinder thumper that revs to the moon.
+  atv: {
+    baseHz: 28, maxRate: 5.0, fires: [1], jitter: 0.02, ampJitter: 0.15,
+    pulseHz: 450, decay: 0.008, sub: 0.2, rumble: 0.05, whine: 0.05, whineH: 3, noise: 0.14, noiseHz: 2800,
+    misfire: 0, lpBase: 900, lpRpm: 4400, lpThrottle: 1600, gain: 0.7, wobble: 0, backfire: 0.25,
+  },
+  // Trophy truck: high-revving race V8 roar.
+  trophy: {
+    baseHz: 50, maxRate: 4.2, fires: [1, 0.6, 0.95, 0.55, 1, 0.65, 0.9, 0.6], jitter: 0.03, ampJitter: 0.2,
+    pulseHz: 240, decay: 0.01, sub: 0.5, rumble: 0.45, whine: 0.05, whineH: 6, noise: 0.1, noiseHz: 1300,
+    misfire: 0, lpBase: 650, lpRpm: 3800, lpThrottle: 1800, gain: 0.95, wobble: 0, backfire: 0.45,
+  },
 };
 
 /** Render a seamless engine loop (mono) for a profile. Pure JS: deterministic and testable in Node. */

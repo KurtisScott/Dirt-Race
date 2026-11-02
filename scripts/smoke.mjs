@@ -230,6 +230,7 @@ check(
   `results: winner ${res?.winner} (${res?.reason}), Brooks ${res?.racers[0].distanceM} m, Computer ${res?.racers[1].distanceM} m`,
 );
 await page.screenshot({ path: join(shots, 'race-results.png') });
+check(res?.racers.every((r) => typeof r.damage === 'number') && (await page.isVisible('.res-damage')), `results show damage per car (${res?.racers.map((r) => r.damage + '%').join(' / ')})`);
 
 // Effects: fire the event-driven ones and check the pooled systems come alive (and stay ≤ 3 draw calls).
 const fxInfo = await page.evaluate(() => {
@@ -268,9 +269,28 @@ for (let round = 1; round <= 5; round++) {
   await page.keyboard.down('ArrowUp');
   await simWait(1.5);
   await page.keyboard.up('ArrowUp');
+  // Round 2 damage: dent + crack the player's car before measuring (no new GPU resources per hit), then
+  // wreck it after measuring (bumpers fall into the scene) so the NEXT round proves Race Again cleans up.
+  await page.evaluate(() => {
+    const p = window.__dirt.player;
+    p.addDamage(26, { x: 0.2, y: 0, z: 1 });
+    p.addDamage(26, { x: -1, y: 0, z: 0.2 });
+  });
+  await simWait(0.3);
   mems.push(await mem());
+  await page.evaluate(() => {
+    const p = window.__dirt.player;
+    p.addDamage(30, { x: 0, y: 0, z: 1 });
+    p.addDamage(30, { x: 0, y: 0, z: -1 });
+  });
+  await simWait(0.5);
 }
-check(true, 'Race Again → new spin → race, 5 times');
+check(true, 'Race Again → new spin → race, 5 times (each car damaged, then wrecked)');
+{
+  const dm = await page.evaluate(() => ({ dmg: window.__dirt.player.damage, meter: document.querySelector('.dmg-meter b')?.textContent, shown: !document.querySelector('.dmg-meter')?.hidden }));
+  check(dm.dmg === 100 && dm.meter === '100%' && dm.shown, `damage meter in the HUD follows the player's damage (${dm.meter}, visible ${dm.shown})`);
+  await page.screenshot({ path: join(shots, 'r2-damage-ingame.png') });
+}
 console.log(`  info memory per race: ${mems.map((m) => `geo ${m.geo} tex ${m.tex} prog ${m.prog} bodies ${m.bodies} scene ${m.scene}`).join(' | ')}`);
 // Different vehicle kinds have different geometry counts, so allow a little wobble but no growth trend.
 const first = mems[0];

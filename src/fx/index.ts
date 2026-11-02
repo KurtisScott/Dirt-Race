@@ -41,6 +41,8 @@ interface Track {
   had: boolean[];
   acc: number[];
   exhaustAcc: number;
+  /** Round 2: engine smoke from damage. */
+  smokeAcc: number;
 }
 
 const _c = new THREE.Color();
@@ -136,7 +138,7 @@ export class Effects implements System {
     blob.matrixAutoUpdate = false;
     blob.visible = !this.ctx.quality.preset.shadows;
     this.ctx.renderer.scene.add(blob);
-    this.tracked.push({ v, blob, prev: [0, 1, 2, 3].map(() => new THREE.Vector3()), had: [false, false, false, false], acc: [0, 0, 0, 0], exhaustAcc: 0 });
+    this.tracked.push({ v, blob, prev: [0, 1, 2, 3].map(() => new THREE.Vector3()), had: [false, false, false, false], acc: [0, 0, 0, 0], exhaustAcc: 0, smokeAcc: 0 });
   }
   untrack(v: VehicleState): void {
     for (const t of this.tracked) if (t.v === v) t.blob.removeFromParent();
@@ -255,6 +257,46 @@ export class Effects implements System {
         this.exhaust(v);
       }
     }
+    // ---- damage: engine smoke from 35% (white → grey → black as it gets worse).
+    const dmg = v.damage ?? 0;
+    if (dmg >= 35) {
+      const k = (dmg - 35) / 65;
+      t.smokeAcc += (2.5 + k * 13) * d * dt;
+      if (t.smokeAcc > 4) t.smokeAcc = 4;
+      while (t.smokeAcc >= 1) {
+        t.smokeAcc -= 1;
+        this.engineSmoke(v, dmg);
+      }
+    }
+  }
+
+  /** Damage smoke rising from the engine bay (spec.engineZ along the body, near the top). */
+  private engineSmoke(v: VehicleState, dmg: number): void {
+    const r = Math.random;
+    const L = v.spec.size.length;
+    _n.set(0, 1, 0).applyQuaternion(v.quaternion);
+    _p.copy(v.position)
+      .addScaledVector(v.forward, (v.spec.engineZ ?? 0.3) * L)
+      .addScaledVector(_n, v.spec.size.height * 0.3);
+    // White → grey (55%) → black (85%+).
+    const g = dmg < 55 ? 0.9 : dmg < 85 ? 0.9 - ((dmg - 55) / 30) * 0.55 : 0.35 - Math.min(1, (dmg - 85) / 15) * 0.22;
+    _c.setRGB(g, g, g * 0.98);
+    const speed = Math.abs(v.speed);
+    this.particles.spawn({
+      x: _p.x + (r() - 0.5) * 0.3,
+      y: _p.y,
+      z: _p.z + (r() - 0.5) * 0.3,
+      vx: -v.forward.x * Math.min(4, speed * 0.3) + (r() - 0.5) * 0.6,
+      vy: 1.1 + r() * 0.8,
+      vz: -v.forward.z * Math.min(4, speed * 0.3) + (r() - 0.5) * 0.6,
+      life: 1.1 + r() * 0.8,
+      size0: 0.35,
+      size1: 1.8 + r() * 1.2 + (dmg / 100) * 1.2,
+      color: _c,
+      alpha: 0.32 + (dmg / 100) * 0.25,
+      gravity: -0.05,
+      drag: 1.2,
+    });
   }
 
   /** Lay the blob shadow on the ground under the car, tilted to the terrain, fading with height. */
