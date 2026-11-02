@@ -7,7 +7,7 @@
 export type RacerId = 'player' | 'cpu';
 
 /** Ground surface kinds (SPEC "Surfaces"). */
-export type SurfaceType = 'asphalt' | 'dirt' | 'gravel' | 'mud' | 'sand' | 'water';
+export type SurfaceType = 'asphalt' | 'dirt' | 'gravel' | 'mud' | 'sand' | 'water' | 'snow';
 
 /** Physical effect of a surface on tyres and chassis. */
 export interface SurfaceProps {

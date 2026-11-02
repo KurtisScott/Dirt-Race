@@ -11,6 +11,8 @@ export const SURFACES: Record<SurfaceType, SurfaceProps> = {
   mud: { grip: 0.5, drag: 0.22, rolling: 1.6 },
   sand: { grip: 0.6, drag: 0.12, rolling: 1.0 },
   water: { grip: 0.72, drag: 0.15, rolling: 0.8 },
+  /** Packed snow / ice on the snowy pass: the slipperiest surface (less grip than gravel or mud), a little drag. */
+  snow: { grip: 0.48, drag: 0.07, rolling: 0.5 },
 };
 
 /** Colours used for placeholder ground/debug rendering. */
@@ -21,4 +23,5 @@ export const SURFACE_COLORS: Record<SurfaceType, number> = {
   mud: 0x4f3a24,
   sand: 0xe0c98f,
   water: 0x4f8fb5,
+  snow: 0xeef2f6,
 };

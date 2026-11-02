@@ -6,12 +6,14 @@ import {
   GORGE_BRIDGE_M,
   GORGE_DEPTH_M,
   JUMP_BONUS_M,
+  JUMP_LAND_CURVE,
   JUMP_LAND_DEG,
   JUMP_LANDING_M,
   JUMP_MARKER_STEP_M,
   JUMP_RAMP_DEG,
   JUMP_RAMP_HEIGHT_M,
   JUMP_RAMP_LEN_M,
+  JUMP_ROUNDOUT_M,
   JUMP_RUNOFF_M,
   JUMP_RUNUP_M,
   JUMP_TABLE_M,
@@ -48,8 +50,8 @@ const CANYON_WALL_HEIGHT = 34;
 /** River centre-line distance from the road centre on the riverside run (m). */
 const RIVER_OFFSET = 24;
 
-export const SURFACE_CODES: SurfaceType[] = ['asphalt', 'dirt', 'gravel', 'mud', 'sand', 'water'];
-const SC: Record<SurfaceType, number> = { asphalt: 0, dirt: 1, gravel: 2, mud: 3, sand: 4, water: 5 };
+export const SURFACE_CODES: SurfaceType[] = ['asphalt', 'dirt', 'gravel', 'mud', 'sand', 'water', 'snow'];
+const SC: Record<SurfaceType, number> = { asphalt: 0, dirt: 1, gravel: 2, mud: 3, sand: 4, water: 5, snow: 6 };
 
 /** Visual terrain layers (texture array order). Weights travel as 3 vec4 attributes (12 slots). */
 export const LAYERS = ['grass', 'dirt', 'gravel', 'mud', 'sand', 'rock', 'riverbed', 'field', 'snow', 'forest', 'redrock'] as const;
@@ -270,7 +272,7 @@ export class CourseData {
     let drop = 0;
     for (let i = 1; i < this.jumpProfile.length; i++) {
       const u = (i - 0.5) * 0.5;
-      drop += Math.tan(landAngle(u) * (Math.PI / 180)) * 0.5;
+      drop += landSlope(u) * 0.5;
       this.jumpProfile[i] = drop;
     }
 
@@ -624,7 +626,7 @@ export class CourseData {
       onRoad[L_REDROCK] = 0.3;
     } else if (zone === 'snow') {
       // Packed snow with gravel showing through in the wheel tracks.
-      onRoad[L_SNOW] = 0.2 + wSnow * 0.25;
+      onRoad[L_SNOW] = 0.2 + wSnow * 0.45; // more snow where the physics surface is snow (snowW > 0.5)
       onRoad[L_GRAVEL] = 1 - onRoad[L_SNOW];
     } else if (zone === 'desert') {
       onRoad[L_SAND] = 1;
@@ -935,8 +937,9 @@ export class CourseData {
         if (zone === 'town') st = onRoad ? 'asphalt' : 'dirt';
         else if (zone === 'mud') st = this.mudPitW(f.s) > 0.15 && f.d < hw + 5 ? 'mud' : 'dirt';
         else if (zone === 'rocky' || zone === 'canyon') st = onRoad ? 'gravel' : 'dirt';
-        // Snowy pass: packed snow is loose and slippery: gravel grip (no new surface type, see DECISIONS.md).
-        else if (zone === 'snow') st = 'gravel';
+        // Snowy pass: packed snow / ice (the slipperiest surface) where the snow lies (on the road and off it);
+        // gravel on the road where the pass starts and ends.
+        else if (zone === 'snow') st = this.snowW(f.s) > 0.5 ? 'snow' : onRoad ? 'gravel' : 'dirt';
         else if (zone === 'desert') st = 'sand';
         else if (zone === 'jump') {
           if (f.s >= runoffS - 1) st = 'sand';
@@ -1308,17 +1311,16 @@ export class CourseTrack implements TrackPath {
 }
 
 /**
- * Landing-hill angle (degrees, downhill) at u m past the lip: a short flat "table", then it steepens to
- * JUMP_LAND_DEG, holds, and rounds out into the flat run-off (so landings are gentle glancing blows).
+ * Landing-hill slope (tan, downhill) at u m past the lip: a flat "table", then a parabola that bends away
+ * under the flight paths (so the speed INTO the hill stays low wherever a car lands), capped at
+ * JUMP_LAND_DEG, rounding out into the flat run-off over the last JUMP_ROUNDOUT_M of the landing zone.
  */
-function landAngle(u: number): number {
+function landSlope(u: number): number {
   const T = JUMP_TABLE_M;
   const L = JUMP_LANDING_M;
-  if (u < T) return 0;
-  if (u < T + 20) return JUMP_LAND_DEG * smoothstep(T, T + 20, u);
-  if (u < L - 30) return JUMP_LAND_DEG;
-  if (u < L) return JUMP_LAND_DEG * (1 - smoothstep(L - 30, L, u));
-  return 0;
+  if (u < T || u >= L) return 0;
+  const k = Math.min(2 * JUMP_LAND_CURVE * (u - T), Math.tan((JUMP_LAND_DEG * Math.PI) / 180));
+  return k * (1 - smoothstep(L - JUMP_ROUNDOUT_M, L, u));
 }
 
 /** Low-frequency rolling countryside (shared by road profile and off-road terrain). */

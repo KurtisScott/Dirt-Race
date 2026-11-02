@@ -167,7 +167,7 @@ if (!ONLY || ONLY === 'personality') {
     physics.dispose();
     return sp;
   };
-  const surfs: SurfaceType[] = ['asphalt', 'dirt', 'gravel', 'mud', 'sand', 'water'];
+  const surfs: SurfaceType[] = ['asphalt', 'dirt', 'gravel', 'mud', 'sand', 'water', 'snow'];
   const sp: Record<string, Record<string, number>> = {};
   for (const k of EVERY) {
     sp[k] = {};
@@ -177,6 +177,8 @@ if (!ONLY || ONLY === 'personality') {
   const fastestOn = (s: SurfaceType, among: VehicleKind[] = ALL) => among.reduce((a, b) => (sp[b][s] > sp[a][s] ? b : a));
   check(fastestOn('asphalt', EVERY) === 'sports', `sports car is fastest on asphalt of all sixteen (${kmh(sp.sports.asphalt)} km/h)`);
   check(fastestOn('sand', EVERY) === 'trophy' || fastestOn('sand', EVERY) === 'buggy', `a desert machine is fastest on sand (${fastestOn('sand', EVERY)})`);
+  check(Object.values(SURFACES).every((x) => x.grip >= SURFACES.snow.grip) && SURFACES.snow.grip < SURFACES.gravel.grip, `snow is the slipperiest surface (grip ${SURFACES.snow.grip} vs gravel ${SURFACES.gravel.grip})`);
+  check(EVERY.every((k) => sp[k].snow > 40 / 3.6 && sp[k].snow < sp[k].asphalt), `every vehicle keeps going on snow, slower than on asphalt (slowest ${kmh(Math.min(...EVERY.map((k) => sp[k].snow)))} km/h)`);
   check(EVERY.every((k) => sp[k].asphalt > 20 && sp[k].mud > 6), `every vehicle keeps moving on every surface (slowest mud: ${kmh(Math.min(...EVERY.map((k) => sp[k].mud)))} km/h)`);
   check(sp.tractor.mud > sp.tractor.asphalt * 0.8 && sp.tractor.asphalt < sp.sedan.asphalt, `tractor: slowest on the road (${kmh(sp.tractor.asphalt)}) but unbothered by mud (${kmh(sp.tractor.mud)})`);
   check(sp.hatch.mud < sp.jeep.mud && sp.rally.gravel > sp.hatch.gravel, `hot hatch bogs in mud vs the 4x4 (${kmh(sp.hatch.mud)} vs ${kmh(sp.jeep.mud)}); rally car beats it on gravel`);

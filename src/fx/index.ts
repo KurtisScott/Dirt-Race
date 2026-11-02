@@ -31,6 +31,7 @@ const DUST: Record<SurfaceType, number | null> = {
   mud: null,
   sand: 0xe6d3a2,
   water: null,
+  snow: 0xf4f7fb, // snow spray (see snowSpray)
 };
 
 const CONFETTI = [0xff4d4d, 0xffd23f, 0x3fb6ff, 0x6ee06e, 0xff8ad8, 0xffffff, 0xff9a3d];
@@ -238,7 +239,11 @@ export class Effects implements System {
       }
       // ---- surface particles
       const dust = DUST[surf];
-      if (dust !== null && speed > 2.5) {
+      if (surf === 'snow' && (speed > 2 || (v.input.throttle > 0.3 && w.slip > 0.2))) {
+        // Snow: a rooster tail of bright clumps that fall back plus a fine powder cloud.
+        const rate = (rear ? 1 : 0.3 + w.slip) * (speed * 1.4 + w.slip * 30 + v.input.throttle * 6) * d;
+        this.emitRate(t, i, dt, rate, () => this.snowSpray(w.point, v, speed));
+      } else if (dust !== null && speed > 2.5) {
         // Rear wheels make the trail; fronts only when sliding.
         const rate = (rear ? 1 : w.slip) * (speed * 1.1 + w.slip * 25) * d * (surf === 'sand' ? 1.25 : surf === 'gravel' ? 0.8 : 1);
         this.emitRate(t, i, dt, rate, () => this.dust(w.point, v, dust, speed));
@@ -352,6 +357,28 @@ export class Effects implements System {
       alpha: 0.32,
       gravity: -0.02,
       drag: 1.6,
+    });
+  }
+
+  private snowSpray(at: THREE.Vector3, v: VehicleState, speed: number): void {
+    const r = Math.random;
+    const clump = r() < 0.55;
+    _c.setHex(DUST.snow!).multiplyScalar(0.92 + r() * 0.1);
+    const kick = clump ? 2 + speed * 0.18 + v.input.throttle * 1.5 : 0.8;
+    this.particles.spawn({
+      x: at.x + (r() - 0.5) * 0.4,
+      y: at.y + 0.12,
+      z: at.z + (r() - 0.5) * 0.4,
+      vx: -v.forward.x * (clump ? kick : speed * 0.12) + (r() - 0.5) * (clump ? 2.2 : 1.4),
+      vy: clump ? 1.4 + r() * kick * 0.6 : 0.5 + r() * 0.8,
+      vz: -v.forward.z * (clump ? kick : speed * 0.12) + (r() - 0.5) * (clump ? 2.2 : 1.4),
+      life: clump ? 0.55 + r() * 0.4 : 1.0 + r() * 0.8,
+      size0: clump ? 0.18 + r() * 0.14 : 0.45 + r() * 0.3,
+      size1: clump ? 0.35 + r() * 0.2 : 2.2 + r() * 1.4 + speed * 0.05,
+      color: _c,
+      alpha: clump ? 0.85 : 0.38,
+      gravity: clump ? 1 : -0.02,
+      drag: clump ? 0.6 : 1.5,
     });
   }
 
