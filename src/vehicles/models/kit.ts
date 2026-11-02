@@ -74,6 +74,8 @@ export function sharedMaterials(): Record<Exclude<MatKey, 'paint' | 'tail'>, THR
     chrome: new THREE.MeshStandardMaterial({ color: 0xe3e8ee, roughness: 0.16, metalness: 1, envMap: env, envMapIntensity: 1.1 }),
     lamp: new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
   };
+  // Named so a later graphics pass can find and upgrade them (one shared instance per role).
+  for (const [k, m] of Object.entries(shared)) m.name = `vehicle-${k}`;
   return shared;
 }
 
@@ -525,10 +527,11 @@ export function groundOffset(p: VehicleParams): number {
   return wheelCentreY(p) - p.wheelRadius;
 }
 
-/** Wheel centre height relative to the chassis centre at rest. */
-export function wheelCentreY(p: VehicleParams): number {
+/** Wheel centre height relative to the chassis centre at rest (front axle; `rear` adds the bigger-rear-wheel offset). */
+export function wheelCentreY(p: VehicleParams, rear = false): number {
   const sag = Math.min(p.suspensionTravel, 9.81 / (4 * p.suspensionStiffness));
-  return p.wheelY - (p.suspensionRest - sag);
+  const lift = rear ? (p.wheelRadiusRear ?? p.wheelRadius) - p.wheelRadius : 0;
+  return p.wheelY + lift - (p.suspensionRest - sag);
 }
 
 export function triangleCount(obj: THREE.Object3D): number {

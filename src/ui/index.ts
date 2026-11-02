@@ -6,6 +6,7 @@ import { onTap, Screen } from './screens';
 
 export { Screen, h, onTap } from './screens';
 export { RaceHud, ResultsScreen, RACER_NAME, formatClock, formatDistance, type HudTrack } from './raceHud';
+export { DamageMeter, damageColor } from './damageMeter';
 
 export type ScreenName = 'title' | 'calibrate' | 'pause' | 'help' | 'results';
 

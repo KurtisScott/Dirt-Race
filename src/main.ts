@@ -15,7 +15,7 @@ import { RaceController, RaceFlow } from './race';
 import { AIDriver, createPhysicsSensor } from './ai';
 import { ChaseCamera, Effects } from './fx';
 import { AudioSystem, mountVolumeControls } from './audio';
-import { RaceHud, UI } from './ui';
+import { DamageMeter, RaceHud, UI } from './ui';
 import { pickVehicles, showVehicleSpin } from './ui/spin';
 import { settings } from './core/settings';
 import { applyPendingUpdate, registerPWA } from './pwa';
@@ -186,6 +186,7 @@ async function boot(): Promise<void> {
   hud = new RaceHud(overlay, r);
   hud.setTrack(w.track);
   hud.setVisible(false);
+  new DamageMeter(overlay); // Round 2: event-driven (car:damage / phase / pause)
 
   const f = (flow = new RaceFlow({
     race: r,

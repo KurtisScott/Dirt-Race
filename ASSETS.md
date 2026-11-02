@@ -12,7 +12,9 @@ Every third-party asset or library that ships in `dist/` must be listed here.
 | Course terrain textures (grass, dirt, gravel, mud, sand, rock, river bed, field), asphalt, water normals, checker, banner font | generated at runtime (`world/textures.ts`) | original | value noise + Worley noise into typed arrays; 5×7 pixel font drawn by hand |
 | Course props (trees, pines, bushes, rocks, grass tufts, houses, barn + silo, fences, ramps, log bridge, flag) | generated at runtime (`world/props.ts`, `world/raceCourse.ts`) | original | three.js primitives, vertex colours |
 | Animals (deer, bear, mouse, duck, crocodile) | generated at runtime (`world/animals.ts`) | original | three.js primitives |
-| Vehicle models, thumbnails, reflection env map | generated at runtime (`vehicles/models/`) | original | lofted procedural bodies; 64² gradient cube map |
+| Vehicle models (16), thumbnails, reflection env map | generated at runtime (`vehicles/models/`) | original | lofted procedural bodies; 64² gradient cube map; generic designs, no brands or trade dress |
+| Damage visuals: cracked-windscreen decals, dents, scratches | generated at runtime (`vehicles/models/damageFx.ts`) | original | crack pattern rasterised into a 256² DataTexture (no canvas); dents/scratches edit the car's own geometry/vertex colours |
+| HUD damage meter icon | inline SVG (`ui/damageMeter.ts`) | original | |
 | Sky, particles, confetti, hay strands, skid marks, blob shadows | generated at runtime (`core/renderer.ts`, `fx/`) | original | shaders + typed arrays, no image files |
 | Title logo, How-to-play icons, results confetti | inline SVG/CSS (`ui/index.ts`, `style.css`) | original | system font (`ui-rounded`), emoji from the device's own font |
 | Engine, effects, music, countdown beeps | generated at runtime (`audio/`) | original | Web Audio synthesis |

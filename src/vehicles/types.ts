@@ -14,9 +14,58 @@ export interface VehicleSpec {
   /** Body dimensions (metres) used by params and the procedural models. */
   size: { length: number; width: number; height: number };
   wheelRadius: number;
+  /** Optional bigger rear wheels (tractor). Front wheels use `wheelRadius`. */
+  rearWheelRadius?: number;
   drive: 'front' | 'rear' | 'all';
   /** Sound profile id the audio module uses to pick an engine synth. */
-  engineSound: 'truck' | 'v8' | 'sport' | 'buggy' | 'sedan' | 'monster';
+  engineSound: EngineSoundId;
+  /**
+   * Hidden hill-climb ability 1..5 (was the visible "Hill climb" stat before Round 2). Still drives the
+   * steep-slope traction/power limits in params.ts, so steep terrain keeps its personality.
+   */
+  climb: number;
+  /** Optional chassis tuning (defaults reproduce the original six). See params.ts. */
+  tune?: VehicleTune;
+  /** Where the engine sits along the body, as a fraction of length from the centre (+ = front). Smoke comes from here. Default 0.3. */
+  engineZ?: number;
+  /** Damage multiplier: < 1 shrugs off hits (bus, tractor), > 1 dents easily (sports car). Default 1. */
+  toughness?: number;
+}
+
+export type EngineSoundId =
+  | 'truck'
+  | 'v8'
+  | 'sport'
+  | 'buggy'
+  | 'sedan'
+  | 'monster'
+  | 'rally'
+  | 'hatch'
+  | 'lifted'
+  | 'jeep'
+  | 'suv'
+  | 'van'
+  | 'bus'
+  | 'tractor'
+  | 'atv'
+  | 'trophy';
+
+/** Per-vehicle chassis tweaks (all optional; defaults = a normal car). */
+export interface VehicleTune {
+  /** Centre-of-mass drop as a multiple of the collider half height (1 = default; sedan 1.6, monster 1.4). */
+  comDrop?: number;
+  /** Extra suspension rest length (m) on top of the off-road mapping (monster 0.25). */
+  extraRest?: number;
+  /** Extra half-track (m) beyond the body (monster 0.25). */
+  wheelXAdd?: number;
+  /** Under-damped, bouncy suspension (buggy). */
+  bouncy?: boolean;
+  /** Roll-assist strength (default 5; sedan 9, buggy 3). */
+  antiRoll?: number;
+  /** Override the half wheelbase (m). Default: length/2 − max(0.55, 1.25·wheelRadius). */
+  wheelZ?: number;
+  /** Scale on the bounding-volume mass estimate (boxy vans are mostly air). */
+  massScale?: number;
 }
 
 /**
@@ -73,6 +122,18 @@ export interface VehicleParams {
    * bled off and the hill-climb stat decides how long the climb takes. Unset = no power limit.
    */
   climbPower?: number;
+  /**
+   * Optional rear wheel radius (tractor). Rear suspension mounts are raised by the difference so the
+   * chassis still sits level.
+   */
+  wheelRadiusRear?: number;
+  /**
+   * Hard-landing tolerance: downward speed (m/s) at touchdown below which a landing does no damage.
+   * From the jump stat (see params.ts). Optional so older param overrides stay valid; default 9.
+   */
+  landingTolerance?: number;
+  /** Damage multiplier (spec.toughness). Optional, default 1. */
+  damageScale?: number;
   /** Roll-stability assist strength (Nm per rad of excess roll). Sedan is very high. */
   antiRoll: number;
   /** Air control torque factor (small: lets the car level out in the air). */
@@ -108,6 +169,11 @@ export interface VehicleState {
   readonly wheels: readonly WheelState[];
   /** True when upside-down/on its side. */
   readonly flipped: boolean;
+  /**
+   * Damage 0..100 (%). Builds up from hard hits during a race and never goes down (Reset does not repair;
+   * each race builds fresh cars). Emitted as 'car:damage'. Costs up to 25% top speed/acceleration.
+   */
+  readonly damage: number;
 }
 
 export interface WheelState {
@@ -129,6 +195,11 @@ export interface Vehicle extends VehicleState, System {
   reset(at: SpawnPoint): void;
   /** Freeze in place (countdown, results) without removing. */
   setFrozen(frozen: boolean): void;
+  /**
+   * Add damage directly (tests/debug, or a source the vehicle can't detect itself). `localDir` is the
+   * direction from the car centre towards the hit in chassis space (+Z forward, +X left); default: front.
+   */
+  addDamage(amount: number, localDir?: { x: number; y: number; z: number }): void;
   readonly object: THREE.Object3D;
   dispose(): void;
 }

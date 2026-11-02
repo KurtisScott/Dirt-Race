@@ -1,0 +1,58 @@
+/* Damage meter (Round 2): small car icon above the speedometer, bottom centre. */
+.dmg-meter {
+  position: absolute;
+  bottom: calc(92px + var(--safe-b, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  pointer-events: none;
+  color: white;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+  line-height: 1;
+}
+.dmg-meter[hidden] {
+  display: none;
+}
+.dmg-meter svg {
+  width: 56px;
+  height: 30px;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.55));
+}
+.dmg-meter .dmg-body {
+  fill: var(--dmg, #7ee07e);
+  stroke: rgba(0, 0, 0, 0.55);
+  stroke-width: 1.4;
+  transition: fill 0.3s;
+}
+.dmg-meter .dmg-glass {
+  fill: rgba(20, 30, 45, 0.75);
+}
+.dmg-meter .dmg-wheel {
+  fill: #1d1d1f;
+}
+.dmg-meter .dmg-hub {
+  fill: #c9ced4;
+}
+.dmg-meter b {
+  font-size: 15px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+.dmg-meter[data-level='high'] svg {
+  animation: dmg-shake 1.2s ease-in-out infinite;
+}
+.dmg-meter.hit svg {
+  animation: dmg-hit 0.5s ease-out;
+}
+@keyframes dmg-hit {
+  0% { transform: scale(1.35) rotate(-6deg); }
+  60% { transform: scale(0.95) rotate(3deg); }
+  100% { transform: scale(1) rotate(0); }
+}
+@keyframes dmg-shake {
+  0%, 100% { transform: rotate(0); }
+  50% { transform: rotate(-3deg) translateY(1px); }
+}

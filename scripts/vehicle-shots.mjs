@@ -22,15 +22,19 @@ page.on('console', (m) => (m.type() === 'error' ? errors.push(m.text()) : proces
 const arg = process.argv[2];
 const view = process.argv[3] ?? '34';
 const q = process.argv[4] ?? 'medium';
-const kinds = arg && arg !== 'each' ? [arg] : ['sports', 'muscle', 'pickup', 'monster', 'buggy', 'sedan'];
+const ALL = ['sports', 'muscle', 'pickup', 'monster', 'buggy', 'sedan', 'rally', 'hatch', 'lifted', 'jeep', 'suv', 'van', 'bus', 'tractor', 'atv', 'trophy'];
+const kinds = arg && arg !== 'each' ? arg.split(',') : ALL;
+const damage = process.env.DAMAGE ?? '';
+const prefix = process.env.PREFIX ?? 'vehicle-';
 for (const kind of kinds) {
   for (const paint of process.env.PAINTS ? [0, 1, 2] : [Number(process.env.PAINT ?? 0)]) {
-    await page.goto(`http://127.0.0.1:5199/src/vehicles/dev/preview.html?kind=${kind}&view=${view}&q=${q}&paint=${paint}`);
+    await page.goto(`http://127.0.0.1:5199/src/vehicles/dev/preview.html?kind=${kind}&view=${view}&q=${q}&paint=${paint}${damage ? `&damage=${damage}` : ''}`);
     await page.waitForFunction(() => window.__preview?.done, null, { timeout: 60000 });
     const r = await page.evaluate(() => window.__preview.result);
     const suffix = view === '34' ? '' : `-${view}`;
     const p = process.env.PAINTS ? `-p${paint}` : '';
-    const name = kind === 'all' ? 'vehicles-all' : kind === 'thumbs' ? 'vehicle-thumbs' : `vehicle-${kind}${suffix}${p}`;
+    const d = damage ? `-dmg${damage}` : '';
+    const name = kind === 'all' ? `${prefix}all${d}` : kind === 'thumbs' ? `${prefix}thumbs` : `${prefix}${kind}${suffix}${p}${d}`;
     await page.screenshot({ path: join(shots, `${name}.png`) });
     console.log(name, JSON.stringify(r));
   }

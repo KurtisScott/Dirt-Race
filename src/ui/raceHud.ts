@@ -2,6 +2,7 @@ import { events, type RaceResults } from '../core/events';
 import { settings } from '../core/settings';
 import type { RacerId, SpeedUnit, System } from '../core/types';
 import type { RaceView } from '../race/types';
+import { damageColor } from './damageMeter';
 import { h, onTap, Screen } from './screens';
 
 /** Display names (SPEC: "Brooks vs Computer"). */
@@ -257,6 +258,7 @@ export class ResultsScreen {
             <div class="res-bar"><i style="width:${pct.toFixed(1)}%"></i><b style="left:${((100 * finish) / total).toFixed(1)}%">🏁</b></div>
             <div class="res-line">${how}</div>
             <div class="res-line">${r.bonus ? '⭐ Summit bonus!' : r.finished ? 'No summit bonus' : '&nbsp;'}</div>
+            ${r.damage !== undefined ? `<div class="res-line res-damage">🔧 Damage <b style="color:${damageColor(r.damage)}">${Math.round(r.damage)}%</b></div>` : ''}
             <div class="res-points">+${r.points} <small>point${r.points === 1 ? '' : 's'}</small></div>
           </div>`;
       })

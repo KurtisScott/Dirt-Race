@@ -131,6 +131,8 @@ interface DriveResult {
   bumps: number;
   hits: number;
   minSpeedNearAnimal: number;
+  /** Round 2: damage at the end of the run (%). */
+  damage: number;
 }
 
 function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean; maxS?: number; wander?: boolean; fromFinish?: boolean } = {}): DriveResult {
@@ -251,7 +253,7 @@ function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean;
     if (opts.wander && t > 22) break;
   }
   offs.forEach((f) => f());
-  const out = { finishedAt, maxS: Math.max(s, progressS), resets, summitAt, hillBestUp, stuckAt, bumps, hits, minSpeedNearAnimal };
+  const out = { finishedAt, maxS: Math.max(s, progressS), resets, summitAt, hillBestUp, stuckAt, bumps, hits, minSpeedNearAnimal, damage: v.damage };
   v.dispose();
   world.dispose();
   physics.dispose();
@@ -262,7 +264,9 @@ function spawnAtS(world: InstanceType<typeof RaceCourse>, s: number) {
   return world.data.spawnAt(s, 0);
 }
 
-const kinds = (process.env.WORLD_KINDS?.split(',') ?? ['pickup', 'sedan', 'sports', 'monster', 'buggy', 'muscle']) as VehicleKind[];
+/** The original six (the bonus-hill tuning checks are about these); the default drive covers all sixteen. */
+const ORIGINAL: VehicleKind[] = ['pickup', 'sedan', 'sports', 'monster', 'buggy', 'muscle'];
+const kinds = (process.env.WORLD_KINDS?.split(',') ?? [...ORIGINAL, ...(Object.keys(VEHICLES) as VehicleKind[]).filter((k) => !ORIGINAL.includes(k))]) as VehicleKind[];
 const results: Record<string, DriveResult> = {};
 for (const kind of kinds) {
   console.log(`\n=== drive: ${kind} follows the centre-line ===`);
@@ -270,7 +274,7 @@ for (const kind of kinds) {
   const r = drive(kind);
   results[kind] = r;
   console.log(
-    `  info finish ${r.finishedAt?.toFixed(1) ?? '—'} s, resets ${r.resets} ${r.stuckAt.length ? `(stuck at s=${r.stuckAt.join(', ')})` : ''}, hill best ${r.hillBestUp.toFixed(1)} m of ${(0).toFixed(0)}, summit ${r.summitAt ? `${(r.summitAt - (r.finishedAt ?? 0)).toFixed(1)} s after finish` : 'no'}, obstacle hits ${r.hits}, animal bumps ${r.bumps} (${((performance.now() - t0) / 1000).toFixed(1)} s wall)`,
+    `  info finish ${r.finishedAt?.toFixed(1) ?? '—'} s, damage ${r.damage.toFixed(0)}%, resets ${r.resets} ${r.stuckAt.length ? `(stuck at s=${r.stuckAt.join(', ')})` : ''}, hill best ${r.hillBestUp.toFixed(1)} m of ${(0).toFixed(0)}, summit ${r.summitAt ? `${(r.summitAt - (r.finishedAt ?? 0)).toFixed(1)} s after finish` : 'no'}, obstacle hits ${r.hits}, animal bumps ${r.bumps} (${((performance.now() - t0) / 1000).toFixed(1)} s wall)`,
   );
   check(r.finishedAt !== null, `${kind} reaches the finish line (${r.finishedAt?.toFixed(1) ?? 'never'} s)`);
   check(r.stuckAt.length <= 1, `${kind} never trapped (${r.stuckAt.length} stuck resets)`);
@@ -301,7 +305,7 @@ if (results.pickup && results.sedan) check(results.pickup.hillBestUp > results.s
 // Standing start from the finish line (what a Reset on the hill gives you): the stat should decide it.
 console.log('\n=== bonus hill from a standing start at the finish line ===');
 const standing: Record<string, DriveResult> = {};
-for (const kind of kinds) {
+for (const kind of kinds.filter((k) => ORIGINAL.includes(k))) {
   const r = (standing[kind] = drive(kind, { fromFinish: true, animals: false, maxS: 60 }));
   console.log(`  info ${kind}: ${r.summitAt !== null ? `summit in ${r.summitAt.toFixed(1)} s` : `stalled ${r.hillBestUp.toFixed(1)} m up`}`);
 }
@@ -370,14 +374,16 @@ if (!process.env.WORLD_KINDS || process.env.WORLD_AI) {
       }
       if (finish !== null && t > finish + 45) break;
     }
+    const damage = v.damage;
     v.dispose();
     world.dispose();
     physics.dispose();
-    return { finish, summit, resets, shortcut: onShortcut > 30, best };
+    return { finish, summit, resets, shortcut: onShortcut > 30, best, damage };
   };
-  for (const [kind, d] of [['pickup', 'hard'], ['pickup', 'easy'], ['sedan', 'normal'], ['monster', 'normal'], ['buggy', 'normal'], ['sports', 'normal']] as const) {
+  const NEW = (Object.keys(VEHICLES) as VehicleKind[]).filter((k) => !ORIGINAL.includes(k)).map((k) => [k, 'normal'] as const);
+  for (const [kind, d] of [['pickup', 'hard'], ['pickup', 'easy'], ['sedan', 'normal'], ['monster', 'normal'], ['buggy', 'normal'], ['sports', 'normal'], ...NEW] as const) {
     const r = aiRun(kind, d);
-    console.log(`  info ${kind}/${d}: finish ${r.finish?.toFixed(1) ?? '—'} s, summit ${r.summit !== null && r.finish !== null ? `+${(r.summit - r.finish).toFixed(1)} s` : `no (best ${r.best.toFixed(1)} m up)`}, resets ${r.resets}, log bridge ${r.shortcut ? 'yes' : 'no'}`);
+    console.log(`  info ${kind}/${d}: finish ${r.finish?.toFixed(1) ?? '—'} s, damage ${r.damage.toFixed(0)}%, summit ${r.summit !== null && r.finish !== null ? `+${(r.summit - r.finish).toFixed(1)} s` : `no (best ${r.best.toFixed(1)} m up)`}, resets ${r.resets}, log bridge ${r.shortcut ? 'yes' : 'no'}`);
     check(r.finish !== null && r.resets <= 1, `computer ${kind} on ${d} completes the course (${r.resets} resets)`);
     if (d === 'hard') check(r.shortcut, 'Hard computer takes the log bridge');
     if (d === 'easy') check(!r.shortcut, 'Easy computer stays on the road (ford)');

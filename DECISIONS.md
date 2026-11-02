@@ -241,3 +241,47 @@ The check found the hill too easy: 5 of 6 cars summited in 7–12 s of the 45 s 
 - **Pause-screen debug stats** (quality, frame time, draw calls, version) are hidden unless the URL has `?debug=1`. When shown, they sit top-left under the Reset button instead of over the speedometer.
 - **First-launch tip** (Rotation Lock / Add to Home Screen) is now a compact card bottom-right, beside the title column, instead of a wide card across the bottom that covered half of START and all of "How to play". Both stay fully visible and tappable before "Got it" (checked at 1112×834 and 1024×768).
 - **Crisp gantry banners:** START/FINISH (and the summit "+1 BONUS" sign) are drawn on a 2D canvas in a heavy rounded font, at the board's own aspect ratio, with mipmaps and anisotropy. Before, a 5×7 pixel font was resampled into a power-of-two texture and then stretched about 4.7× across the 16 m board, which made it blurry. Headless tests without a real canvas fall back to the pixel font, now drawn at an integer scale at the right aspect.
+
+## Round 2: 16 vehicles + damage (vehicles agent), 2026-11-02
+
+### Vehicles
+- **Ten new generic vehicles** (no brands or trade dress; the 4x4 has a horizontal-bar grille, the tractor avoids green+yellow): rally car, hot hatch, lifted pickup, classic 4x4, family SUV, delivery van, school bus, farm tractor, quad bike (with a rider), trophy truck. 3.4k–5.5k triangles each (wheels included); models live in `models/designs2.ts`, shared helpers in `models/common.ts`.
+- **"Hill climb" → "Jump" on the spin screen** (bars: Top speed, Accel, Grip, Off-road, Jump). The old hill-climb value is kept as hidden `spec.climb` so steep-slope physics (and the old bonus-hill tuning, still on this branch) are unchanged for the original six.
+- **Jump stat = how far it flies, roughly.** Ballistic distance is set by launch speed (mass doesn't change it), so jump stats were assigned from a measured headless long jump (`npx tsx scripts/physics-test.ts jump`: 220 m run-up from rest, 15° × 10 m ramp, 2.6 m lip, flat landing). The stat also maps to physics: air levelling (`AIR_CONTROL`) and hard-landing damage tolerance (`LANDING_TOLERANCE`, 8 → 11.5 m/s). No artificial "ramp pop". Measured (distance past the lip, all landed upright):
+
+  | Vehicle | Top / Accel / Grip / Off-road / Jump | km/h asphalt | Launch | Jump |
+  | --- | --- | --- | --- | --- |
+  | Sports car | 5 / 5 / 4 / 1 / 5 | 150 | 133 | 79 m |
+  | Trophy truck | 4 / 3 / 2 / 5 / 5 | 130 | 120 | 68 m |
+  | Rally car | 4 / 4 / 3 / 4 / 4 | 132 | 120 | 67 m |
+  | Muscle car | 4 / 4 / 2 / 2 / 4 | 132 | 119 | 67 m |
+  | Hot hatch | 4 / 5 / 4 / 2 / 4 | 133 | 118 | 63 m |
+  | Dune buggy | 3 / 4 / 3 / 5 / 4 | 115 | 105 | 59 m |
+  | Lifted pickup | 3 / 3 / 2 / 5 / 3 | 114 | 107 | 55 m |
+  | Pickup | 3 / 3 / 3 / 4 / 3 | 114 | 107 | 54 m |
+  | Quad bike | 3 / 4 / 3 / 4 / 3 | 115 | 107 | 54 m |
+  | Family SUV | 3 / 3 / 4 / 3 / 3 | 114 | 104 | 51 m |
+  | Delivery van | 3 / 2 / 3 / 2 / 2 | 111 | 100 | 47 m |
+  | Classic 4x4 | 2 / 3 / 3 / 5 / 2 | 97 | 91 | 41 m |
+  | Monster truck | 2 / 2 / 3 / 5 / 2 | 96 | 90 | 40 m |
+  | Grandma's sedan | 2 / 1 / 4 / 2 / 1 | 93 | 87 | 37 m |
+  | School bus | 2 / 1 / 3 / 2 / 1 | 93 | 84 | 34 m |
+  | Farm tractor | 1 / 2 / 3 / 5 / 1 | 79 | 71 | 27 m |
+
+  **For the course agent:** with this ramp a bonus line around 55–60 m past the lip splits fast/light from heavy/slow; the sedan, bus and tractor never get near it. Shorter run-ups favour high-accel cars (hatch, sports, buggy).
+- **Per-spec tuning instead of `kind === …` switches**: `tune {comDrop, extraRest, wheelXAdd, bouncy, antiRoll, wheelZ, massScale}`, `rearWheelRadius` (tractor: real 0.85 m rear wheels, rear mounts raised by the difference), `engineZ`, `toughness`. The original six get exactly their old values (physics/personality numbers unchanged).
+- Mass is still the bounding-volume estimate (capped at 3000 kg: the bus hits the cap). Tall vehicles (bus, van, tractor) get a low centre of mass and strong roll assist; all 16 pass the full-lock-at-top-speed and slalom no-flip checks.
+- **Engine sounds:** ten new profiles on the existing synth (turbo four with anti-lag pops, buzzy hatch four, lopey big V8, straight-six, quiet V6, clattery diesel four, deep diesel six with turbo whine, putt-putt tractor three, single-cylinder quad, race V8).
+- **Spin reel thumbnails:** rendering 16 × 3 paints would be 48 models on the first spin (seconds on an A12), so each spin renders one random paint per kind for the filler cards plus the two picks (≈18, cached). About 20 cards scroll past, as before.
+- **Draw calls per car** grew by 1–3 (front/rear bumpers are separate pivot meshes so they can hang/fall) and +1 for a cracked windscreen. Two cars ≈ 24–30 calls.
+
+### Damage
+- **Rules** (`vehicles/damage.ts`, one tuning table): hits below 4.5 m/s approach speed (≈ 16 km/h, along the contact normal) do nothing; above that 1.7 % per m/s (a 50 km/h head-on into a boulder ≈ 16 %), capped at 30 % per hit. Car vs car uses the relative velocity and the mass share (the bus barely notices the hatch: 3 % vs 15 % head-on). Hard landings above the jump-stat tolerance: 2.2 % per m/s (the course's mid-race ramps land at ≈ 6 m/s: no damage). Damaging animals: 1.1 % per m/s above 3 m/s, capped at 16 %. `toughness` scales everything (sports 1.2 … bus/tractor 0.55).
+- **Detection:** Rapier contact-force events on the chassis + roof colliders. Approach speed comes from the chassis velocity captured right before the physics step (and the other car's). Ground contacts count only as walls when the normal is mostly horizontal (|n.y| < 0.6), so scraping, bottoming out and rolling onto the roof aren't wall hits. Debris (hay, cones), animals, sensors and potholes (`static/'bump'`) are ignored; a 0.4 s cooldown per collider stops one crash counting several times. `vehicle:collision` is now emitted too (audio already had crash/car-bump sounds waiting for it).
+- **Animals:** listens to `animal:bump` and uses the new optional `damaging` / `speed` fields (the course agent emits them). Without `damaging: true` an animal never damages.
+- **Persistence:** damage lives on the vehicle; Reset doesn't touch it, and RaceFlow builds fresh cars every race. `car:damage {racer, damage, delta, source?}`.
+- **Driving effect:** top speed and engine force × (1 − 0.25·damage): pickup 115 → 101 → 87 km/h at 0/50/100 %; 0–30 km/h 1.08 → 1.48 s. A slight steering pull (0.02 rad at 100 %, to the side of the first hit) — at 100 % a car drifts ≈ 14 m off line over 8 s with no correction; the AI's pure pursuit absorbs it.
+- **Visuals:** dents push body vertices in around the hit (falloff radius 0.45–1.1 m, depth up to 0.15 m per hit, total offset capped at 0.2 m per vertex, deterministic crumple noise keyed on position so duplicated crease vertices never tear), dented triangles get flat normals. Scratches (bare metal / primer streaks) around hits, road grime rising up the paint with total damage (vertex colours). Windscreen decal cracks at 25 % and shatters at 55 % (forward-facing glass triangles copied 8 mm outward; two shared 256² DataTextures, created once and never disposed). The hit end's bumper hangs at 30 % and falls at 62 % (the other end at 55 % / 85 %); fallen bumpers tumble onto the road and stay there until the car is disposed. Engine smoke from 35 %: white → grey (55 %) → black (85 %+), from `spec.engineZ`.
+- **No leaks:** geometry is edited in place; the crack decal is the only per-car addition. The smoke test damages and then wrecks the player's car every Race Again round and checks GPU textures/geometries, bodies and scene children stay flat.
+- **HUD:** a small car icon above the speedometer, green → yellow (10 %) → orange (35 %) → red (65 %, wobbling), with the % below; it pops on each hit. **Results:** "🔧 Damage NN %" line per car (`RacerResult.damage`, optional).
+- **Not done / for others:** no repair pickups; the AI doesn't drive more carefully when damaged; damage doesn't change engine sound (an easy follow-up: lower `lpBase` / add misfire with damage).

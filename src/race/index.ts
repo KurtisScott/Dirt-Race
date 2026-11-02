@@ -425,6 +425,7 @@ export class RaceController implements System, RaceView {
       timeS: p.finishTimeS,
       bonus: p.summit,
       points: p.points,
+      damage: Math.round(this.vehicles[p.racer]?.damage ?? 0),
     });
     for (const p of [a, b]) if (p.points) session.add(p.racer, p.points);
     const results: RaceResults = {

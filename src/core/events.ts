@@ -35,6 +35,8 @@ export interface GameEvents {
   'vehicle:collision': { racer: RacerId; other: 'vehicle' | 'obstacle' | 'animal' | 'world'; impulse: number };
   'vehicle:flipped': { racer: RacerId };
   'vehicle:surface': { racer: RacerId; surface: SurfaceType };
+  /** Round 2: a car took damage. `damage` = new total 0..100 (%), `delta` = this hit. */
+  'car:damage': { racer: RacerId; damage: number; delta: number; source?: DamageSource };
 
   // ---- vehicle spin screen (src/ui/spin also emits spin:tick / spin:land above) ----
   /** GO tapped on the spin screen: both picks final. */
@@ -43,8 +45,11 @@ export interface GameEvents {
   // ---- world (emitted by src/world) ----
   'animal:crossing': { kind: string; x: number; z: number };
   'obstacle:hit': { kind: string; racer: RacerId; x: number; y: number; z: number };
-  /** Optional: a vehicle bumped an animal (kind as in animal:crossing). Audio plays the animal's voice. */
-  'animal:bump': { kind: string; racer: RacerId; x: number; z: number };
+  /**
+   * Optional: a vehicle bumped an animal (kind as in animal:crossing). Audio plays the animal's voice.
+   * Round 2 (optional fields): `damaging` = a big animal that dents the car, `speed` = car speed (m/s).
+   */
+  'animal:bump': { kind: string; racer: RacerId; x: number; z: number; damaging?: boolean; speed?: number };
 
   // ---- settings / system ----
   'quality:changed': { level: QualityLevel; auto: boolean };
@@ -54,6 +59,9 @@ export interface GameEvents {
   'tilt:status': { status: TiltStatus };
   'app:paused': { paused: boolean };
 }
+
+/** What caused a 'car:damage' (optional detail). */
+export type DamageSource = 'obstacle' | 'wall' | 'vehicle' | 'landing' | 'animal' | 'other';
 
 export type GamePhase = 'title' | 'calibrate' | 'spin' | 'countdown' | 'racing' | 'bonus' | 'results' | 'freeDrive';
 export type TiltStatus = 'unknown' | 'granted' | 'denied' | 'unavailable';
@@ -66,6 +74,8 @@ export interface RacerResult {
   timeS: number | null;
   bonus: boolean;
   points: number;
+  /** Optional (Round 2): the car's damage at the end of the race, 0..100 (%). */
+  damage?: number;
 }
 export interface RaceResults {
   winner: RacerId | null;
