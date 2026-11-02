@@ -18,6 +18,7 @@ const MAX_S_JUMP = 30;
 const LEAD_HYSTERESIS = 2;
 const _p = new THREE.Vector3();
 const _t = new THREE.Vector3();
+const _up = new THREE.Vector3();
 
 /**
  * Race state machine + rules (SPEC "Game flow" / "Rules").
@@ -28,14 +29,17 @@ const _t = new THREE.Vector3();
  *   Cars are held still during the countdown (race owns `vehicle.input`, see `setDriver`).
  * - racing: progress `s` = projection on the centre-line; checkpoints are passed in order; the first car
  *   across `finishS` wins 1 point (`race:finish`) and the phase becomes 'bonus'.
- * - Every car that crosses the finish gets its own `bonusTimeS` window to reach the summit (+1, `race:summit`).
- * - 4-minute timer: any car still racing when it expires is done (`race:timeout`). If nobody finished,
+ * - Every car that crosses the finish gets its own `bonusTimeS` window for ONE end-jump attempt: take off
+ *   from the ramp (`race:takeoff`), touch down, stay upright on the wheels for `jumpLandS` → `race:jump`
+ *   {distanceM, bonus, crashed}. Landing past `world.jump.bonusS` on the wheels = +1. The car then stops
+ *   in the run-off (race holds it: brake to a stop).
+ * - 8-minute timer: any car still racing when it expires is done (`race:timeout`). If nobody finished,
  *   the farthest car (best `s`) wins.
- * - When the player is done (summit / bonus over / timeout) the cpu gets at most `cpuGraceS` more seconds
- *   (to finish and/or climb), so Brooks isn't kept waiting.
+ * - When the player is done (jump / bonus over / timeout) the cpu gets at most `cpuGraceS` more seconds
+ *   (to finish and/or jump), so Brooks isn't kept waiting.
  * - All done → `resultsDelayS` → 'results' (`race:results`, session score saved).
  * - Reset: `requestReset(racer)` waits `resetDelayS`, then respawns at the last checkpoint
- *   (on the bonus hill: at the finish line). Flips auto-reset after 0.5 s.
+ *   (after the finish: at the finish line; a reset mid-jump counts as a crash). Flips auto-reset after 0.5 s.
  */
 export class RaceController implements System, RaceView {
   phase: GamePhase = 'title';
@@ -63,6 +67,8 @@ export class RaceController implements System, RaceView {
   /** Track distance of the grid (results distances are measured from here). */
   private gridS: Record<RacerId, number> = { player: 0, cpu: 0 };
   private unsub: (() => void)[] = [];
+  /** Per-racer jump bookkeeping: time in the current jump phase and the touchdown s. */
+  private jumpT: Record<RacerId, { t: number; landS: number }> = { player: { t: 0, landS: 0 }, cpu: { t: 0, landS: 0 } };
 
   constructor(
     private world: World,
@@ -91,7 +97,10 @@ export class RaceController implements System, RaceView {
       checkpoint: -1,
       finished: false,
       finishTimeS: null,
-      summit: false,
+      jump: 'none',
+      jumpM: null,
+      jumpCrashed: false,
+      jumpBonus: false,
       position: 1,
       stage: 'waiting',
       bonusLeftS: 0,
@@ -103,9 +112,9 @@ export class RaceController implements System, RaceView {
     return Math.max(0, this.config.timeLimitS - this.elapsedS);
   }
 
-  /** Distance along the track where the race is decided (SPEC: one config value). */
+  /** Distance along the track of the finish line (the end-jump run-up starts here). */
   get finishS(): number {
-    return this.config.finishAt === 'summit' ? this.world.track.summitS : this.world.track.finishS;
+    return this.world.track.finishS;
   }
 
   setVehicle(racer: RacerId, v: Vehicle | undefined): void {
@@ -199,7 +208,7 @@ export class RaceController implements System, RaceView {
     const cps = this.world.checkpoints;
     const track = this.world.track;
     const cp = p.checkpoint >= 0 ? cps[p.checkpoint] : undefined;
-    // After the finish line, retry the hill from the finish (unless a checkpoint sits farther up).
+    // After the finish line, back to the finish (start of the jump run-up), unless a checkpoint sits farther on.
     if (p.finished && (!cp || cp.s < this.finishS)) return this.trackSpawn(Math.min(this.finishS, track.length - 1));
     if (cp) return cp.respawn;
     if (p.bestS < 15) return this.world.spawns[racer];
@@ -245,6 +254,12 @@ export class RaceController implements System, RaceView {
       if (next > 0) this.pendingReset[racer] = next;
       else {
         delete this.pendingReset[racer];
+        // A reset mid-jump ends the attempt as a crash.
+        const pj = this.progress[racer];
+        if (pj.stage === 'bonus' && (pj.jump === 'air' || pj.jump === 'landing')) {
+          if (pj.jump === 'air') this.jumpT[racer].landS = pj.s;
+          this.resolveJump(racer, true);
+        }
         const v = this.vehicles[racer];
         if (v) {
           const sp = this.respawnFor(racer);
@@ -298,8 +313,9 @@ export class RaceController implements System, RaceView {
         if (p.bestS >= this.finishS) this.finish(racer);
       } else if (p.stage === 'bonus') {
         p.bonusLeftS = Math.max(0, p.bonusLeftS - dt);
-        if (this.atSummit(racer)) this.summit(racer);
-        else if (p.bonusLeftS <= 0) this.done(racer);
+        this.updateJump(racer, dt);
+        // Time's up (an attempt already in the air still gets to land).
+        if (p.stage === 'bonus' && p.bonusLeftS <= 0 && p.jump !== 'air' && p.jump !== 'landing') this.done(racer);
       }
     }
 
@@ -324,15 +340,53 @@ export class RaceController implements System, RaceView {
     }
   }
 
-  private atSummit(racer: RacerId): boolean {
+  /** One end-jump attempt per racer: take-off → touchdown → stay upright `jumpLandS` → resolve. */
+  private updateJump(racer: RacerId, dt: number): void {
     const p = this.progress[racer];
-    if (p.bestS >= this.world.track.summitS - 1) return true;
     const v = this.vehicles[racer];
-    if (!v) return false;
-    const sm = this.world.summit;
-    const dx = v.position.x - sm.x;
-    const dz = v.position.z - sm.z;
-    return dx * dx + dz * dz < this.config.summitRadiusM ** 2 && v.position.y > sm.y - 3;
+    const j = this.world.jump;
+    if (!v || p.jump === 'done') return;
+    const st = this.jumpT[racer];
+    st.t += dt;
+    const upY = _up.set(0, 1, 0).applyQuaternion(v.quaternion).y;
+    if (p.jump === 'none') {
+      if (p.s > j.lipS - 4 && p.s < j.lipS + 15 && v.wheelsOnGround === 0 && v.airTime > 0.12) {
+        p.jump = 'air';
+        st.t = 0;
+        events.emit('race:takeoff', { racer });
+      } else if (p.s > j.lipS + this.config.jumpMissM) {
+        // Never left the ground (drove round the ramp, or crept off it): the attempt is over, 0 m.
+        st.landS = j.lipS;
+        this.resolveJump(racer, false);
+      }
+    } else if (p.jump === 'air') {
+      if (v.wheelsOnGround >= 2) {
+        p.jump = 'landing';
+        st.t = 0;
+        st.landS = p.s;
+      } else if (st.t > 7 || (upY < 0.2 && st.t > 0.5 && v.wheelsOnGround === 0 && Math.abs(v.speed) < 2)) {
+        // Came down on the roof/side (no wheel contact) or something odd: a crash where it is.
+        st.landS = p.s;
+        this.resolveJump(racer, true);
+      }
+    } else if (p.jump === 'landing') {
+      if (upY < 0.5 || v.flipped) this.resolveJump(racer, true);
+      else if (st.t >= this.config.jumpLandS) this.resolveJump(racer, false);
+    }
+  }
+
+  private resolveJump(racer: RacerId, crashed: boolean): void {
+    const p = this.progress[racer];
+    if (p.jump === 'done') return;
+    const j = this.world.jump;
+    const dist = Math.max(0, this.jumpT[racer].landS - j.lipS);
+    p.jump = 'done';
+    p.jumpM = Math.round(dist * 10) / 10;
+    p.jumpCrashed = crashed;
+    p.jumpBonus = !crashed && dist >= j.bonusM;
+    if (p.jumpBonus) p.points += 1;
+    events.emit('race:jump', { racer, distanceM: p.jumpM, bonus: p.jumpBonus, crashed });
+    this.done(racer);
   }
 
   private finish(racer: RacerId): void {
@@ -347,23 +401,12 @@ export class RaceController implements System, RaceView {
     }
     events.emit('race:finish', { racer, timeS: this.elapsedS, winner });
     if (winner && this.phase === 'racing') this.setPhase('bonus');
-    if (this.config.finishAt === 'summit') {
-      this.summit(racer);
-      return;
-    }
     p.stage = 'bonus';
+    p.jump = 'none';
+    this.jumpT[racer].t = 0;
     p.bonusLeftS = this.config.bonusTimeS;
     delete this.pendingReset[racer];
     events.emit('race:bonus', { racer, seconds: this.config.bonusTimeS });
-  }
-
-  private summit(racer: RacerId): void {
-    const p = this.progress[racer];
-    if (p.summit) return;
-    p.summit = true;
-    p.points += 1;
-    events.emit('race:summit', { racer });
-    this.done(racer);
   }
 
   private done(racer: RacerId): void {
@@ -423,8 +466,10 @@ export class RaceController implements System, RaceView {
       distanceM: Math.max(0, Math.round((p.finished ? Math.max(p.bestS, this.finishS) : p.bestS) - this.gridS[p.racer])),
       finished: p.finished,
       timeS: p.finishTimeS,
-      bonus: p.summit,
+      bonus: p.jumpBonus,
       points: p.points,
+      jumpM: p.jumpM,
+      jumpCrashed: p.jumpCrashed,
     });
     for (const p of [a, b]) if (p.points) session.add(p.racer, p.points);
     const results: RaceResults = {
@@ -433,7 +478,7 @@ export class RaceController implements System, RaceView {
       session: { ...session.score },
       reason,
       finishM: Math.round(this.finishS - this.gridS.player),
-      summitM: Math.round(this.world.track.summitS - this.gridS.player),
+      jumpBonusM: this.world.jump.bonusM,
     };
     this.lastResults = results;
     this.setPhase('results');

@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { Group, groups, RAPIER, type PhysicsWorld } from '../core/physics';
-import { CELL, type CourseData, WALL_END } from './course';
+import { CELL, type CourseData, LAYER_SLOTS, WALL_END } from './course';
 import { makeTerrainLayers, TERRAIN_LAYER_COUNT } from './textures';
 
 /**
  * Terrain: one Rapier heightfield for physics, and a chunked mesh for rendering that uses exactly the
- * same vertices and triangle split, blended from 8 procedural layers in a single texture array.
+ * same vertices and triangle split, blended from 11 procedural layers in a single texture array
+ * (per-vertex weights in three vec4 attributes wA/wB/wC = 12 slots).
  *
  * Chunks far from the road (beyond the valley walls) are built at 1/4 resolution with skirts to hide
  * cracks. Each chunk is one draw call; frustum culling drops the rest.
@@ -15,7 +16,7 @@ const FAR_STEP = 4;
 
 /**
  * How the terrain is shaded:
- * - `full`: 8-layer texture-array splat + macro variation (Medium/High).
+ * - `full`: 11-layer texture-array splat + macro variation (Medium/High).
  * - `lite`: same splat without the macro sample (Low: one texture fetch fewer per pixel).
  * - `simple`: no textures at all, per-vertex blend of each layer's average colour. The safety net for GPUs
  *   or browsers where the texture-array shader fails to compile or `sampler2DArray` is unsupported.
@@ -66,7 +67,7 @@ export function createTerrainMesh(c: CourseData, textureSize: number, shading: T
   group.name = 'terrain';
   const nxC = Math.ceil((c.NX - 1) / CHUNK);
   const nzC = Math.ceil((c.NZ - 1) / CHUNK);
-  const wts = new Float32Array(TERRAIN_LAYER_COUNT);
+  const wts = new Float32Array(LAYER_SLOTS);
   for (let cx = 0; cx < nxC; cx++) {
     for (let cz = 0; cz < nzC; cz++) {
       const j0 = cx * CHUNK;
@@ -98,10 +99,11 @@ export function createTerrainMesh(c: CourseData, textureSize: number, shading: T
               }
             const x = c.x0 + bj * CELL;
             const z = c.z0 + bi * CELL;
-            const rc = c.riverCoords(x + B, z + B);
-            const river = Math.abs(rc.a) < 22 && rc.b > c.river.bMin - 20 && rc.b < c.river.bMax + 20;
-            const hill = c.hillU(x + B, z + B).h > 0.5 || c.hillU(x, z).h > 0.5;
-            const full = near < 14 || river || hill;
+            const river = c.nearRiver(x + B, z + B, 22, 20);
+            const fc = c.fieldsAt(x + B, z + B);
+            // Full detail where the ground shape matters to the eye: the gorge and the landing hill.
+            const special = Math.abs(fc.s - c.gorge.s) < 24 || (fc.s > c.jump.footS - 10 && fc.s < c.jump.runoffS + 20);
+            const full = near < 14 || river || (special && near < 40);
             parts.push(buildChunk(c, bj, bi, ej, ei, full ? 1 : 2, wts, !full));
           }
         }
@@ -160,6 +162,7 @@ function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: numbe
   const nrm = new Float32Array(nV * 3);
   const wA = new Uint8Array(nV * 4);
   const wB = new Uint8Array(nV * 4);
+  const wC = new Uint8Array(nV * 4);
   const H = c.heights;
   const NZ = c.NZ;
   const hAt = (i: number, j: number): number => H[THREE.MathUtils.clamp(i, 0, NZ - 1) + THREE.MathUtils.clamp(j, 0, c.NX - 1) * NZ];
@@ -182,6 +185,7 @@ function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: numbe
     for (let k = 0; k < 4; k++) {
       wA[v * 4 + k] = Math.round(wts[k] * 255);
       wB[v * 4 + k] = Math.round(wts[k + 4] * 255);
+      wC[v * 4 + k] = Math.round(wts[k + 8] * 255);
     }
     v++;
   };
@@ -231,6 +235,7 @@ function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: numbe
   geo.setAttribute('normal', new THREE.BufferAttribute(nrm.subarray(0, v * 3), 3));
   geo.setAttribute('wA', new THREE.BufferAttribute(wA.subarray(0, v * 4), 4, true));
   geo.setAttribute('wB', new THREE.BufferAttribute(wB.subarray(0, v * 4), 4, true));
+  geo.setAttribute('wC', new THREE.BufferAttribute(wC.subarray(0, v * 4), 4, true));
   geo.setIndex(nV > 65535 ? new THREE.Uint32BufferAttribute(idx, 1) : new THREE.Uint16BufferAttribute(idx, 1));
   geo.computeBoundingSphere();
   geo.computeBoundingBox();
@@ -248,6 +253,7 @@ function mergeChunkParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   const nrm = new Float32Array(nv * 3);
   const wA = new Uint8Array(nv * 4);
   const wB = new Uint8Array(nv * 4);
+  const wC = new Uint8Array(nv * 4);
   const idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
   let ov = 0;
   let oi = 0;
@@ -257,6 +263,7 @@ function mergeChunkParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
     nrm.set(p.attributes.normal.array as Float32Array, ov * 3);
     wA.set(p.attributes.wA.array as Uint8Array, ov * 4);
     wB.set(p.attributes.wB.array as Uint8Array, ov * 4);
+    wC.set(p.attributes.wC.array as Uint8Array, ov * 4);
     const src = p.index!.array;
     for (let k = 0; k < src.length; k++) idx[oi + k] = src[k] + ov;
     ov += n;
@@ -268,6 +275,7 @@ function mergeChunkParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   g.setAttribute('wA', new THREE.BufferAttribute(wA, 4, true));
   g.setAttribute('wB', new THREE.BufferAttribute(wB, 4, true));
+  g.setAttribute('wC', new THREE.BufferAttribute(wC, 4, true));
   g.setIndex(new THREE.BufferAttribute(idx, 1));
   g.computeBoundingSphere();
   g.computeBoundingBox();
@@ -284,13 +292,13 @@ function makeTerrainMaterial(layers: THREE.DataArrayTexture, lite: boolean): THR
       .replace(
         '#include <common>',
         `#include <common>
-        attribute vec4 wA; attribute vec4 wB;
-        varying vec4 vWA; varying vec4 vWB; varying vec2 vXZ;`,
+        attribute vec4 wA; attribute vec4 wB; attribute vec4 wC;
+        varying vec4 vWA; varying vec4 vWB; varying vec4 vWC; varying vec2 vXZ;`,
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
-        vWA = wA; vWB = wB; vXZ = position.xz;`,
+        vWA = wA; vWB = wB; vWC = wC; vXZ = position.xz;`,
       );
     sh.fragmentShader = sh.fragmentShader
       .replace(
@@ -298,7 +306,7 @@ function makeTerrainMaterial(layers: THREE.DataArrayTexture, lite: boolean): THR
         `#include <common>
         precision highp sampler2DArray;
         uniform sampler2DArray uLayers;
-        varying vec4 vWA; varying vec4 vWB; varying vec2 vXZ;
+        varying vec4 vWA; varying vec4 vWB; varying vec4 vWC; varying vec2 vXZ;
         vec3 tl(float l, vec2 uv) { return texture(uLayers, vec3(uv, l)).rgb; }`,
       )
       .replace(
@@ -316,6 +324,9 @@ function makeTerrainMaterial(layers: THREE.DataArrayTexture, lite: boolean): THR
           if (vWB.y > 0.01) { c += tl(5.0, uvR) * vWB.y; wsum += vWB.y; }
           if (vWB.z > 0.01) { c += tl(6.0, uv) * vWB.z; wsum += vWB.z; }
           if (vWB.w > 0.01) { c += tl(7.0, uv) * vWB.w; wsum += vWB.w; }
+          if (vWC.x > 0.01) { c += tl(8.0, uv * 0.8) * vWC.x; wsum += vWC.x; }
+          if (vWC.y > 0.01) { c += tl(9.0, uv) * vWC.y; wsum += vWC.y; }
+          if (vWC.z > 0.01) { c += tl(10.0, uvR) * vWC.z; wsum += vWC.z; }
           c /= max(wsum, 0.001);
           ${
             lite
@@ -328,7 +339,7 @@ function makeTerrainMaterial(layers: THREE.DataArrayTexture, lite: boolean): THR
         }`,
       );
   };
-  mat.customProgramCacheKey = () => (lite ? 'dirt-race-terrain-lite-v1' : 'dirt-race-terrain-v1');
+  mat.customProgramCacheKey = () => (lite ? 'dirt-race-terrain-lite-v2' : 'dirt-race-terrain-v2');
   return mat;
 }
 
@@ -373,17 +384,18 @@ function makeSimpleTerrainMaterial(textureSize: number): THREE.MeshLambertMateri
       .replace(
         '#include <common>',
         `#include <common>
-        attribute vec4 wA; attribute vec4 wB;
-        uniform vec3 uPal[8];
+        attribute vec4 wA; attribute vec4 wB; attribute vec4 wC;
+        uniform vec3 uPal[${TERRAIN_LAYER_COUNT}];
         varying vec3 vTerr;`,
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
         {
-          float ws = dot(wA, vec4(1.0)) + dot(wB, vec4(1.0));
+          float ws = dot(wA, vec4(1.0)) + dot(wB, vec4(1.0)) + dot(wC.xyz, vec3(1.0));
           vec3 c = uPal[0] * wA.x + uPal[1] * wA.y + uPal[2] * wA.z + uPal[3] * wA.w
-                 + uPal[4] * wB.x + uPal[5] * wB.y + uPal[6] * wB.z + uPal[7] * wB.w;
+                 + uPal[4] * wB.x + uPal[5] * wB.y + uPal[6] * wB.z + uPal[7] * wB.w
+                 + uPal[8] * wC.x + uPal[9] * wC.y + uPal[10] * wC.z;
           c /= max(ws, 0.001);
           c *= 0.9 + 0.1 * sin(position.x * 0.71) * sin(position.z * 0.53 + 1.3) + 0.06 * sin(position.x * 0.05 + position.z * 0.04);
           vTerr = c;
@@ -393,6 +405,6 @@ function makeSimpleTerrainMaterial(textureSize: number): THREE.MeshLambertMateri
       .replace('#include <common>', `#include <common>\n        varying vec3 vTerr;`)
       .replace('#include <map_fragment>', `diffuseColor.rgb *= vTerr;`);
   };
-  mat.customProgramCacheKey = () => 'dirt-race-terrain-simple-v1';
+  mat.customProgramCacheKey = () => 'dirt-race-terrain-simple-v2';
   return mat;
 }

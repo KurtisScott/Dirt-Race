@@ -211,6 +211,8 @@ export class AIDriver implements System {
       const next = this.slope[Math.min(n - 1, i + 3)];
       if (slope - next > 0.18) v = Math.min(v, 15); // crest: don't launch into the air
       this.vmax[i] = Math.min(top, Math.max(6, v));
+      // After the finish line: the end-jump run-up. Every difficulty attempts it at its car's full speed.
+      if (s >= track.finishS - 2) this.vmax[i] = p.topSpeed * 1.05;
     }
     // Backward pass: be able to brake down to every later limit.
     const aBrake = 6 * prof.corner;
@@ -263,7 +265,8 @@ export class AIDriver implements System {
       return;
     }
 
-    this.updateMistakes(dt);
+    if (this.s < track.finishS - 2) this.updateMistakes(dt);
+    else this.mistake = null;
 
     // ---- target point (racing line or shortcut)
     const lookAhead = 5 + absSpeed * 0.55;
@@ -299,9 +302,16 @@ export class AIDriver implements System {
       if (this.avoidLat !== null) targetSpeed = Math.min(targetSpeed, Math.max(10, absSpeed * 0.92));
     }
 
+    // End jump (after the finish line): straight run-up, flat out, no mistakes or easing off.
+    const jumpRun = this.s >= track.finishS - 2;
+    if (jumpRun) {
+      this.mistake = null;
+      if (this.avoidLat === null) targetSpeed = this.params.topSpeed * 1.05;
+    }
+
     // Easy: ease off when well ahead (SPEC).
     const ease = this.profile.easeOffAheadM;
-    if (ease !== null && this.rival) {
+    if (!jumpRun && ease !== null && this.rival) {
       const gap = this.rival.gapM();
       if (gap > ease) targetSpeed *= lerp(1, 0.6, clamp((gap - ease) / 80, 0, 1));
     }
@@ -336,8 +346,8 @@ export class AIDriver implements System {
       throttle = Math.min(throttle, 0.3);
       if (absSpeed > 14) brake = Math.max(brake, 0.4);
     }
-    // Uphill (bonus hill): never feather the throttle.
-    if (this.slope[this.idx(this.s)] > 0.2 && err > -1) throttle = 1;
+    // Steep uphill, or the end-jump run-up: never feather the throttle.
+    if ((this.slope[this.idx(this.s)] > 0.2 || jumpRun) && err > -1) throttle = 1;
     if (this.mistake === 'lift') throttle *= 0.15;
 
     // ---- facing the wrong way (after a spin): three-point turn
@@ -526,7 +536,7 @@ export class AIDriver implements System {
     for (const def of list) {
       if (this.shortcutsTaken.has(def.id) || def.points.length < 2) continue;
       if (this.s > def.startS - 12 && this.s < def.startS + 5) {
-        const path = new PolylineTrack(def.points as THREE.Vector3[], def.halfWidth ?? 2, 0, 0);
+        const path = new PolylineTrack(def.points as THREE.Vector3[], def.halfWidth ?? 2, 0);
         this.shortcut = { def, path, s: path.project(this.vehicle.position).s };
         this.shortcutsTaken.add(def.id);
         return this.shortcut;

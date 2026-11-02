@@ -110,11 +110,43 @@ const LAYER_FNS: ((u: number, v: number, o: RGB, px: number) => void)[] = [
     o[1] = 150 * k;
     o[2] = 74 * k;
   },
+  // 8 snow (soft drifts, faint blue shadows, sparkle)
+  (u, v, o, px) => {
+    const n = tn(u, v, 4, 3, 71);
+    const drift = tn(u, v, 2, 2, 73);
+    const sparkle = hash2(Math.floor(u * px), Math.floor(v * px), 75) > 0.985 ? 10 : 0;
+    const k = 0.93 + n * 0.06;
+    o[0] = (232 - Math.max(0, -drift) * 30) * k + sparkle;
+    o[1] = (238 - Math.max(0, -drift) * 18) * k + sparkle;
+    o[2] = 248 * k + sparkle;
+  },
+  // 9 forest floor (needles, dark loam, leaf litter)
+  (u, v, o, px) => {
+    const n = tn(u, v, 6, 4, 81);
+    const leaf = worley(u * 30, v * 30, 30, 83);
+    const litter = leaf.f1 < 0.3 ? (leaf.id - 0.5) * 0.5 : 0;
+    const needle = (hash2(Math.floor(u * px), Math.floor(v * px * 0.3), 85) - 0.5) * 0.25;
+    const k = 0.9 + n * 0.25 + needle;
+    o[0] = (88 + litter * 60) * k;
+    o[1] = (70 + litter * 25) * k;
+    o[2] = 46 * k;
+  },
+  // 10 red sandstone (canyon): horizontal strata + cracks
+  (u, v, o) => {
+    const w = worley(u * 6, v * 6, 6, 91);
+    const crack = Math.min(1, (w.f2 - w.f1) * 6);
+    const strata = Math.sin((v * 18 + tn(u, v, 3, 2, 93) * 2.5) * Math.PI * 2) * 0.5 + 0.5;
+    const n = tn(u, v, 6, 4, 95);
+    const k = (0.78 + 0.22 * crack) * (0.9 + n * 0.22);
+    o[0] = (176 + strata * 30) * k;
+    o[1] = (98 + strata * 22) * k;
+    o[2] = (66 + strata * 12) * k;
+  },
 ];
 
 export const TERRAIN_LAYER_COUNT = LAYER_FNS.length;
 
-/** The 8 terrain layers as one sRGB DataArrayTexture (mipmapped, repeat-wrapped). */
+/** The terrain layers (11) as one sRGB DataArrayTexture (mipmapped, repeat-wrapped). */
 export function makeTerrainLayers(size: number): THREE.DataArrayTexture {
   const n = LAYER_FNS.length;
   const data = new Uint8Array(size * size * 4 * n);
@@ -255,7 +287,17 @@ const GLYPHS: Record<string, number[]> = {
   Y: [17, 17, 10, 4, 4, 4, 4],
   '!': [4, 4, 4, 4, 4, 0, 4],
   '+': [0, 4, 4, 31, 4, 4, 0],
+  '0': [14, 17, 19, 21, 25, 17, 14],
   '1': [4, 12, 4, 4, 4, 4, 14],
+  '2': [14, 17, 1, 2, 4, 8, 31],
+  '3': [31, 2, 4, 2, 1, 17, 14],
+  '4': [2, 6, 10, 18, 31, 2, 2],
+  '5': [31, 16, 30, 1, 1, 17, 14],
+  '6': [6, 8, 16, 30, 17, 17, 14],
+  '7': [31, 1, 2, 4, 8, 8, 8],
+  '8': [14, 17, 17, 14, 17, 17, 14],
+  '9': [14, 17, 17, 15, 1, 2, 12],
+  J: [7, 2, 2, 2, 2, 18, 12],
   ' ': [0, 0, 0, 0, 0, 0, 0],
 };
 
@@ -360,4 +402,105 @@ function pixelBanner(text: string, fg: RGB, bg: RGB, checker: boolean, px: numbe
   t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
   t.magFilter = THREE.NearestFilter;
   return t;
+}
+
+// ---------------------------------------------------------------- sign atlas (jump distance markers)
+
+export interface SignCell {
+  text: string;
+  fg: RGB;
+  bg: RGB;
+  /** Border colour (a thick frame makes the boards readable from the car). */
+  border: RGB;
+}
+
+/**
+ * One texture holding `cells` square signs in a grid of `cols` columns (one draw call for every marker
+ * board). Returns the texture and the UV rectangle of each cell: [u0, v0, u1, v1].
+ */
+export function makeSignAtlas(cells: SignCell[], cols = 4): { texture: THREE.Texture; uv: [number, number, number, number][] } {
+  const rows = Math.ceil(cells.length / cols);
+  const uv = cells.map((_, i): [number, number, number, number] => {
+    const cx = i % cols;
+    const cy = Math.floor(i / cols);
+    // Canvas row 0 is the top; texture v = 1 at the top (flipY).
+    return [cx / cols, 1 - (cy + 1) / rows, (cx + 1) / cols, 1 - cy / rows];
+  });
+  const texture = canvasAtlas(cells, cols, rows) ?? pixelAtlas(cells, cols, rows);
+  return { texture, uv };
+}
+
+function canvasAtlas(cells: SignCell[], cols: number, rows: number): THREE.Texture | null {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') return null;
+  const C = 128;
+  let c: HTMLCanvasElement;
+  let g: CanvasRenderingContext2D | null = null;
+  try {
+    c = Object.assign(document.createElement('canvas'), { width: C * cols, height: C * rows });
+    g = c.getContext('2d');
+  } catch {
+    return null;
+  }
+  const probe = g && typeof g.measureText === 'function' ? g.measureText('M') : null;
+  if (!g || !probe || typeof probe.width !== 'number' || typeof g.fillText !== 'function') return null;
+  cells.forEach((cell, i) => {
+    const x = (i % cols) * C;
+    const y = Math.floor(i / cols) * C;
+    g!.fillStyle = rgb(cell.border);
+    g!.fillRect(x, y, C, C);
+    g!.fillStyle = rgb(cell.bg);
+    g!.fillRect(x + 10, y + 10, C - 20, C - 20);
+    let size = cell.text.length > 3 ? 44 : 80;
+    const font = (sz: number): string => `900 ${sz}px ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", "Helvetica Neue", Arial, sans-serif`;
+    g!.font = font(size);
+    const lines = cell.text.split('\n');
+    const tw = Math.max(...lines.map((l) => g!.measureText(l).width));
+    if (tw > C - 28) {
+      size = Math.floor((size * (C - 28)) / tw);
+      g!.font = font(size);
+    }
+    g!.textAlign = 'center';
+    g!.textBaseline = 'middle';
+    g!.fillStyle = rgb(cell.fg);
+    lines.forEach((l, k) => g!.fillText(l, x + C / 2, y + C / 2 + (k - (lines.length - 1) / 2) * size * 1.05 + size * 0.04));
+  });
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.generateMipmaps = true;
+  t.anisotropy = 8;
+  return t;
+}
+
+function pixelAtlas(cells: SignCell[], cols: number, rows: number): THREE.DataTexture {
+  const C = 64;
+  const W = C * cols;
+  const H = C * rows;
+  return dataTex(0, W, H, (x, yy, o) => {
+    const y = H - 1 - yy; // DataTexture row 0 = bottom
+    const i = Math.floor(y / C) * cols + Math.floor(x / C);
+    const cell = cells[i];
+    let col: RGB = [0, 0, 0];
+    if (cell) {
+      const lx = x % C;
+      const ly = y % C;
+      col = lx < 5 || ly < 5 || lx >= C - 5 || ly >= C - 5 ? cell.border : cell.bg;
+      const line = cell.text.split('\n')[0];
+      const px = line.length > 3 ? 2 : 3;
+      const tw = line.length * 6 * px - px;
+      const x0 = Math.floor((C - tw) / 2);
+      const y0 = Math.floor((C - 7 * px) / 2);
+      const gx = Math.floor((lx - x0) / px);
+      const gy = Math.floor((ly - y0) / px);
+      if (lx >= x0 && gx >= 0 && gy >= 0 && gy < 7) {
+        const ch = GLYPHS[line[Math.floor(gx / 6)]?.toUpperCase() ?? ' '];
+        const cx = gx % 6;
+        if (ch && cx < 5 && (ch[gy] >> (4 - cx)) & 1) col = cell.fg;
+      }
+    }
+    o[0] = col[0];
+    o[1] = col[1];
+    o[2] = col[2];
+  });
 }

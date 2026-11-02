@@ -185,7 +185,7 @@ const audioInfo = await page.evaluate(async () => {
   ev.emit('animal:bump', { kind: 'duck', racer: 'player', x: d.player.position.x, z: d.player.position.z + 3 });
   ev.emit('vehicle:surface', { racer: 'cpu', surface: 'mud' }); // no cpu attached: must be ignored quietly
   ev.emit('spin:tick', { racer: 'player' });
-  ev.emit('race:summit', { racer: 'player' });
+  ev.emit('race:jump', { racer: 'player', distanceM: 70, bonus: true, crashed: false });
   await new Promise((r) => setTimeout(r, 300));
   return { state: a.ctx?.state, music: a.currentMusic, oneShots: a.stats.oneShots - before, vol: [a.musicVolume, a.sfxVolume] };
 });
@@ -216,7 +216,23 @@ const mphOk = await page
 check(kmhOk && mphOk, `speedometer switches mph ↔ km/h (now ${await label()})`);
 await page.click('[data-tap="resume"]');
 
-// Finish the race fast: shorten the clock, let it run out → results screen.
+// Finish the race and do the end jump: Brooks is put on the finish straight, holds the gas through the finish
+// line, up the run-up and off the ramp. One attempt, then the car is held; the results show the jump distance.
+await page.evaluate(() => {
+  const d = window.__dirt;
+  d.player.reset(d.world.data.spawnAt(d.world.track.finishS - 120, 0));
+});
+await page.keyboard.down('ArrowUp');
+const jumpEvt = await page
+  .waitForFunction(() => window.__dirt.race.progress.player.jump === 'done', null, { timeout: 300000, polling: 100 })
+  .then(
+    () => page.evaluate(() => ({ ...window.__dirt.race.progress.player })),
+    () => null,
+  );
+await page.keyboard.up('ArrowUp');
+check(!!jumpEvt && jumpEvt.finished && jumpEvt.stage === 'done' && (jumpEvt.jumpM ?? 0) > 30, `end jump: ${jumpEvt?.jumpM} m, bonus ${jumpEvt?.jumpBonus}, crashed ${jumpEvt?.jumpCrashed}`);
+await page.screenshot({ path: join(shots, 'race-jump.png') });
+// Don't wait for the computer's 5 km: shorten the clock → results.
 await page.evaluate(() => {
   const r = window.__dirt.race;
   r.config.timeLimitS = r.elapsedS + 1;
@@ -226,9 +242,11 @@ await page.waitForSelector('[data-screen="results"]:not([hidden])', {
 });
 const res = await page.evaluate(() => window.__dirt.race.lastResults);
 check(
-  !!res && res.racers.length === 2 && (res.reason === 'distance' || res.reason === 'tie' || res.reason === 'finish'),
-  `results: winner ${res?.winner} (${res?.reason}), Brooks ${res?.racers[0].distanceM} m, Computer ${res?.racers[1].distanceM} m`,
+  !!res && res.racers.length === 2 && res.winner === 'player' && res.reason === 'finish' && res.racers[0].jumpM === jumpEvt?.jumpM,
+  `results: winner ${res?.winner} (${res?.reason}), Brooks ${res?.racers[0].distanceM} m + jump ${res?.racers[0].jumpM} m, Computer ${res?.racers[1].distanceM} m`,
 );
+const jumpText = await page.textContent('[data-screen="results"] [data-r="cards"]');
+check(/jump/.test(jumpText ?? ''), `results screen shows the jump (${(jumpText ?? '').replace(/\s+/g, ' ').slice(0, 120)})`);
 await page.screenshot({ path: join(shots, 'race-results.png') });
 
 // Effects: fire the event-driven ones and check the pooled systems come alive (and stay ≤ 3 draw calls).
@@ -238,11 +256,11 @@ const fxInfo = await page.evaluate(() => {
   d.events.emit('obstacle:hit', { kind: 'hay bale', racer: 'player', x: p.x, y: p.y, z: p.z });
   d.events.emit('vehicle:landed', { racer: 'player', impact: 8 });
   d.events.emit('race:finish', { racer: 'player', timeS: 100, winner: true });
-  d.events.emit('race:summit', { racer: 'player' });
+  d.events.emit('race:jump', { racer: 'player', distanceM: 70, bonus: true, crashed: false });
   d.fx.update(1 / 60);
   return { particles: d.fx.particles.count, debris: d.fx.debris.count };
 });
-check(fxInfo.particles > 10 && fxInfo.debris > 20, `effects: hay/landing/confetti/summit spawn pooled particles (${fxInfo.particles} sprites, ${fxInfo.debris} pieces)`);
+check(fxInfo.particles > 10 && fxInfo.debris > 20, `effects: hay/landing/confetti/jump-bonus spawn pooled particles (${fxInfo.particles} sprites, ${fxInfo.debris} pieces)`);
 
 // Race Again ×5: GPU memory (geometries/textures), programs and physics bodies must stay flat.
 const mem = () =>
@@ -340,12 +358,12 @@ await tp.waitForTimeout(1500);
 check(await tp.isVisible('#rotate'), 'portrait (touch) shows rotate overlay');
 await touch.close();
 
-// The real course is loaded with its zones, checkpoints, summit and the log-bridge shortcut.
+// The real course is loaded with its zones, checkpoints, the end jump and the log-bridge shortcut.
 const worldInfo = await page.evaluate(() => {
   const w = window.__dirt.world;
-  return { zones: w.zones.map((z) => z.id).join(','), cps: w.checkpoints.length, len: Math.round(w.track.length), shortcuts: (w.shortcuts ?? []).length };
+  return { zones: w.zones.map((z) => z.id).join(','), cps: w.checkpoints.length, len: Math.round(w.track.length), shortcuts: (w.shortcuts ?? []).length, jump: !!w.jump && w.jump.bonusS > w.jump.lipS };
 });
-check(worldInfo.zones.startsWith('town,farm,mud,rocky,desert,river') && worldInfo.cps >= 6 && worldInfo.shortcuts === 1, `race course loaded: ${worldInfo.len} m, zones ${worldInfo.zones}, ${worldInfo.cps} checkpoints`);
+check(worldInfo.zones === 'town,farm,mud,rocky,forest,canyon,snow,desert,river,finish,jump' && worldInfo.cps >= 14 && worldInfo.shortcuts === 1 && worldInfo.jump, `race course loaded: ${worldInfo.len} m, zones ${worldInfo.zones}, ${worldInfo.cps} checkpoints`);
 
 // iOS gesture rule: Start, tapped while the course is still building, must call
 // DeviceOrientationEvent.requestPermission() synchronously inside the click (fake iOS API, slowed CPU).

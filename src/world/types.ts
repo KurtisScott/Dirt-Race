@@ -6,12 +6,10 @@ import type { SpawnPoint, SurfaceType, System } from '../core/types';
  * Used by: race (progress, checkpoints), ai (racing line), ui (progress strip), world (placing things).
  */
 export interface TrackPath {
-  /** Total length in metres from start line to the summit flag. */
+  /** Total length in metres from the start line to the end of the course (after the end jump's run-off). */
   readonly length: number;
-  /** Distance along the path of the finish line (SPEC: foot of the hill; single config value). */
+  /** Distance along the path of the finish line (SPEC: before the end-jump run-up). */
   readonly finishS: number;
-  /** Distance along the path of the summit flag. */
-  readonly summitS: number;
   /** World position on the centre-line at distance s (y = road surface height). */
   pointAt(s: number, target?: THREE.Vector3): THREE.Vector3;
   /** Unit tangent (direction of travel) at distance s. */
@@ -35,12 +33,33 @@ export interface Checkpoint {
 }
 
 /** Track zones from SPEC (used for animals, music intensity, HUD labels). */
-export type ZoneId = 'town' | 'farm' | 'mud' | 'rocky' | 'desert' | 'river' | 'finish' | 'hill' | 'test';
+export type ZoneId = 'town' | 'farm' | 'mud' | 'rocky' | 'forest' | 'canyon' | 'snow' | 'desert' | 'river' | 'finish' | 'jump' | 'test';
 
 export interface Zone {
   id: ZoneId;
   startS: number;
   endS: number;
+}
+
+/**
+ * The end jump (SPEC round 2: replaces the bonus hill). After the finish line a straight run-up leads to a
+ * ramp; landing on the wheels at least `bonusM` past the lip earns +1. Jump distance = horizontal metres
+ * along the centre-line from the lip to the touchdown point.
+ */
+export interface JumpInfo {
+  /** s of the ramp lip (take-off). */
+  readonly lipS: number;
+  /** The bonus line: metres past the lip. */
+  readonly bonusM: number;
+  /** = lipS + bonusM. */
+  readonly bonusS: number;
+  /** s where the landing zone ends and the run-off begins. */
+  readonly runoffS: number;
+  /** Spacing of the distance markers in the landing zone (m). */
+  readonly markerStepM: number;
+  /** Lip centre (top of the ramp) and the centre of the bonus line on the ground (camera / effects). */
+  readonly lip: THREE.Vector3;
+  readonly bonusLine: THREE.Vector3;
 }
 
 /** Physical surface lookup. Vehicles call this per wheel per physics step: keep it cheap (no raycasts). */
@@ -58,8 +77,8 @@ export interface World extends SurfaceQuery, System {
   readonly checkpoints: readonly Checkpoint[];
   /** Two side-by-side grid slots behind the start line. */
   readonly spawns: { player: SpawnPoint; cpu: SpawnPoint };
-  /** Summit flag position (for camera framing / HUD). */
-  readonly summit: THREE.Vector3;
+  /** The end jump after the finish line. */
+  readonly jump: JumpInfo;
   /** Approximate terrain height at (x, z) (no raycast; for placing props/particles). */
   heightAt(x: number, z: number): number;
   zoneAt(s: number): Zone;

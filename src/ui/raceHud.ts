@@ -23,20 +23,21 @@ export function formatDistance(m: number, unit: SpeedUnit = settings.speedUnit):
   return unit === 'mph' ? `${Math.round(m * M_TO_FT).toLocaleString('en-US')} ft` : `${Math.round(m).toLocaleString('en-US')} m`;
 }
 
-/** Track geometry the HUD needs for the progress strip. */
+/** Track geometry the HUD needs for the progress strip (end jump: ramp lip and bonus line). */
 export interface HudTrack {
   length: number;
   finishS: number;
-  summitS: number;
+  jumpS: number;
+  bonusS: number;
 }
 
 const hex = (c: number): string => `#${c.toString(16).padStart(6, '0')}`;
 
 /**
- * In-race HUD (SPEC "HUD: position + timer top, progress strip with both cars and hill"):
- *  - position badge (1st/2nd) and race clock (counts down from 4:00, red in the last 30 s)
- *  - progress strip: start → finish flag → hill → summit flag, with both cars
- *  - bonus-hill banner with its own countdown
+ * In-race HUD (SPEC "HUD: position + timer top, progress strip with both cars and the end jump"):
+ *  - position badge (1st/2nd) and race clock (counts down from 8:00, red in the last 30 s)
+ *  - progress strip: start → finish flag → jump ramp → bonus star, with both cars
+ *  - bonus-jump banner with its own countdown
  *  - big 3-2-1-GO overlay, "Resetting…" pill, short centre messages ("You took the lead!")
  * Reads RaceView only; never touches physics. Cheap: text/style writes only when values change.
  */
@@ -69,16 +70,16 @@ export class RaceHud implements System {
         </div>
         <div class="rh-strip" data-r="strip">
           <div class="rh-track"></div>
-          <div class="rh-hill"></div>
+          <div class="rh-jump"></div>
           <div class="rh-flag rh-finish" title="Finish">🏁</div>
-          <div class="rh-flag rh-summit" title="Summit">⛳</div>
+          <div class="rh-flag rh-star" title="Jump bonus line">⭐</div>
           <div class="rh-car rh-cpu" data-r="cpu"><span>CPU</span></div>
           <div class="rh-car rh-player" data-r="player"><span>YOU</span></div>
         </div>
         <div class="rh-bonus" data-r="bonus" hidden>
-          <b>BONUS HILL</b>
+          <b>BONUS JUMP</b>
           <span class="rh-bonus-clock" data-r="bonusClock">0:45</span>
-          <small data-r="bonusMsg">Drive to the top flag for +1 point!</small>
+          <small data-r="bonusMsg">Full speed at the ramp! Land past the gold line for +1!</small>
         </div>
         <div class="rh-reset" data-r="reset" hidden>Resetting…</div>
         <div class="rh-msg" data-r="msg" hidden></div>
@@ -104,9 +105,14 @@ export class RaceHud implements System {
       if (racer === 'player') this.message(winner ? 'YOU WIN THE RACE! +1' : 'Finished!', winner ? 'good' : '', 3000);
       else if (winner) this.message('Computer finished first', 'bad', 2500);
     });
-    events.on('race:summit', ({ racer }) =>
-      this.message(racer === 'player' ? 'SUMMIT! +1 BONUS' : 'Computer reached the summit', racer === 'player' ? 'gold' : 'bad', 3000),
-    );
+    events.on('race:jump', ({ racer, distanceM, bonus, crashed }) => {
+      const d = formatDistance(distanceM);
+      if (racer === 'player') {
+        if (bonus) this.message(`${d} JUMP! +1 BONUS`, 'gold', 3200);
+        else if (crashed) this.message(`Crash landing! (${d}) No bonus`, 'bad', 2800);
+        else this.message(`${d} jump. So close!`, '', 2800);
+      } else if (bonus) this.message(`Computer jumped ${d}: +1 bonus`, 'bad', 2500);
+    });
     events.on('race:timeout', () => this.message("TIME'S UP!", '', 2500));
   }
 
@@ -115,10 +121,9 @@ export class RaceHud implements System {
     this.track = t;
     const pct = (s: number): string => `${(100 * s) / Math.max(1, t.length)}%`;
     (this.stripEl.querySelector('.rh-finish') as HTMLElement).style.left = pct(t.finishS);
-    (this.stripEl.querySelector('.rh-summit') as HTMLElement).style.left = pct(t.summitS);
-    const hill = this.stripEl.querySelector('.rh-hill') as HTMLElement;
-    hill.style.left = pct(t.finishS);
-    hill.style.width = `${(100 * Math.max(0, t.summitS - t.finishS)) / Math.max(1, t.length)}%`;
+    (this.stripEl.querySelector('.rh-star') as HTMLElement).style.left = pct(t.bonusS);
+    // A little ramp wedge whose lip sits at the take-off point.
+    (this.stripEl.querySelector('.rh-jump') as HTMLElement).style.left = pct(t.jumpS);
   }
 
   /** Marker colours = car paint (helps a kid match the dot to the car). */
@@ -199,7 +204,9 @@ export class RaceHud implements System {
     if (inBonus) {
       this.set('bonus', this.bonusClock, formatClock(me.bonusLeftS));
       this.bonusEl.classList.toggle('low', me.bonusLeftS <= 10);
-      this.set('bonusMsg', this.bonusMsg, me.bonusLeftS <= 10 ? 'Hurry! Keep the gas down!' : 'Drive to the top flag for +1 point!');
+      const msg =
+        me.jump === 'air' || me.jump === 'landing' ? 'Hang on… land on your wheels!' : me.bonusLeftS <= 10 ? 'Hurry! Keep the gas down!' : 'Full speed at the ramp! Land past the gold line for +1!';
+      this.set('bonusMsg', this.bonusMsg, msg);
     }
     this.resetEl.hidden = !(r.isResetting?.('player') ?? false);
   }
@@ -243,8 +250,7 @@ export class ResultsScreen {
             ? 'First across the finish line!'
             : 'The computer crossed the finish line first.';
     const finish = res.finishM ?? 1;
-    const summit = res.summitM ?? finish;
-    const total = Math.max(summit, 1);
+    const total = Math.max(finish, 1);
     s.q('[data-r="cards"]').innerHTML = res.racers
       .map((r) => {
         const won = res.winner === r.racer;
@@ -256,14 +262,14 @@ export class ResultsScreen {
             <div class="res-car">${c !== undefined ? `<i class="dot" style="background:${hex(c)}"></i>` : ''}${r.vehicle}</div>
             <div class="res-bar"><i style="width:${pct.toFixed(1)}%"></i><b style="left:${((100 * finish) / total).toFixed(1)}%">🏁</b></div>
             <div class="res-line">${how}</div>
-            <div class="res-line">${r.bonus ? '⭐ Summit bonus!' : r.finished ? 'No summit bonus' : '&nbsp;'}</div>
+            <div class="res-line">${jumpLine(r, res.jumpBonusM)}</div>
             <div class="res-points">+${r.points} <small>point${r.points === 1 ? '' : 's'}</small></div>
           </div>`;
       })
       .join('');
     s.q('[data-r="session"]').innerHTML = `<span>Brooks</span><b>${res.session.player}</b><em>–</em><b>${res.session.cpu}</b><span>Computer</span>`;
     // Celebration: CSS confetti rain + bouncing trophy when Brooks wins; a smaller star shower for a
-    // summit bonus; an encouraging line otherwise. Pure CSS animations (compositor only), removed on hide.
+    // jump bonus; an encouraging line otherwise. Pure CSS animations (compositor only), removed on hide.
     const me = res.racers.find((r) => r.racer === 'player');
     const won = res.winner === 'player';
     const party = won || !!me?.bonus;
@@ -271,7 +277,7 @@ export class ResultsScreen {
     conf.innerHTML = party ? confettiHtml(won ? 46 : 22, won ? CONFETTI_COLORS : ['#ffd34d', '#ffe680', '#fff2b0']) : '';
     s.q('[data-r="trophy"]').textContent = won ? '🏆' : me?.bonus ? '⭐' : '';
     s.el.classList.toggle('celebrate', party);
-    if (!won && res.winner === 'cpu') s.q('[data-r="sub"]').textContent += me?.bonus ? ' But you got the summit bonus!' : ' So close! Race again?';
+    if (!won && res.winner === 'cpu') s.q('[data-r="sub"]').textContent += me?.bonus ? ' But you got the jump bonus!' : ' So close! Race again?';
     s.show();
   }
 
@@ -279,6 +285,15 @@ export class ResultsScreen {
     this.screen.hide();
     this.screen.q('[data-r="confetti"]').innerHTML = '';
   }
+}
+
+/** Results line for the end jump: distance, and whether it earned the bonus. */
+function jumpLine(r: RaceResults['racers'][number], bonusM?: number): string {
+  if (r.jumpM === null || r.jumpM === undefined) return r.finished ? 'No jump' : '&nbsp;';
+  const d = formatDistance(r.jumpM);
+  if (r.bonus) return `⭐ ${d} jump: bonus!`;
+  if (r.jumpCrashed) return `💥 ${d} jump (crash landing)`;
+  return `🛬 ${d} jump${bonusM ? ` (needed ${formatDistance(bonusM)})` : ''}`;
 }
 
 const CONFETTI_COLORS = ['#ff4d4d', '#ffd23f', '#3fb6ff', '#6ee06e', '#ff8ad8', '#ffffff', '#ff9a3d'];

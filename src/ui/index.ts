@@ -145,7 +145,7 @@ export class UI {
            <div class="help-card"><div class="help-ico tilt" aria-hidden="true"><i></i></div><b>Tilt to steer</b><span>Hold the iPad like a steering wheel and turn it left or right.</span></div>
            <div class="help-card"><div class="help-ico pedals" aria-hidden="true"><i class="brake">BRAKE</i><i class="gas">GAS</i></div><b>Gas and brake</b><span>Hold <b>GAS</b> (right) to go. Hold <b>BRAKE</b> (left) to slow down, keep holding to back up.</span></div>
            <div class="help-card"><div class="help-ico reset" aria-hidden="true">⟲</div><b>Stuck? Reset!</b><span>Tap the reset button (top left). Your car goes back to the last checkpoint.</span></div>
-           <div class="help-card"><div class="help-ico hill" aria-hidden="true">⛰️</div><b>Bonus hill</b><span>First across the 🏁 wins a point. Then climb the big hill to the golden flag for <b>+1 bonus!</b></span></div>
+           <div class="help-card"><div class="help-ico jump" aria-hidden="true">🚀</div><b>Bonus jump</b><span>First across the 🏁 wins a point. Then floor it up the big ramp and land past the gold line for <b>+1 bonus!</b></span></div>
          </div>
          <button class="big-btn" data-tap="help-ok">GOT IT!</button>
        </div>`,

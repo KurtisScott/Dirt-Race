@@ -11,14 +11,20 @@ export interface GameEvents {
   'race:go': Record<string, never>;
   'race:checkpoint': { racer: RacerId; index: number };
   'race:finish': { racer: RacerId; timeS: number; winner: boolean };
-  'race:summit': { racer: RacerId };
+  /**
+   * A racer's one end-jump attempt is over: distance from the lip to the touchdown point (m, horizontal),
+   * whether it counted for the +1 bonus (landed on the wheels past the bonus line), and whether it was a crash.
+   */
+  'race:jump': { racer: RacerId; distanceM: number; bonus: boolean; crashed: boolean };
+  /** A racer left the end-jump ramp (airborne). */
+  'race:takeoff': { racer: RacerId };
   'race:timeout': Record<string, never>;
   'race:results': RaceResults;
   /** The leading car changed during the race (not emitted at GO). */
   'race:lead': { leader: RacerId };
-  /** A racer crossed the finish line and its bonus-hill window started. */
+  /** A racer crossed the finish line and its bonus-jump window started. */
   'race:bonus': { racer: RacerId; seconds: number };
-  /** A racer's race is over (summit reached, bonus window ran out, or time ran out). */
+  /** A racer's race is over (jump attempt done, bonus window ran out, or time ran out). */
   'race:done': { racer: RacerId };
   /** A reset was requested; the car moves after `delayS`. */
   'race:resetting': { racer: RacerId; delayS: number };
@@ -43,8 +49,11 @@ export interface GameEvents {
   // ---- world (emitted by src/world) ----
   'animal:crossing': { kind: string; x: number; z: number };
   'obstacle:hit': { kind: string; racer: RacerId; x: number; y: number; z: number };
-  /** Optional: a vehicle bumped an animal (kind as in animal:crossing). Audio plays the animal's voice. */
-  'animal:bump': { kind: string; racer: RacerId; x: number; z: number };
+  /**
+   * Optional: a vehicle bumped an animal (kind as in animal:crossing). Audio plays the animal's voice.
+   * `damaging`: a big animal (bear, moose, bull, boar, croc) that damages the car; `speed`: relative impact speed (m/s).
+   */
+  'animal:bump': { kind: string; racer: RacerId; x: number; z: number; damaging?: boolean; speed?: number };
 
   // ---- settings / system ----
   'quality:changed': { level: QualityLevel; auto: boolean };
@@ -64,8 +73,13 @@ export interface RacerResult {
   distanceM: number;
   finished: boolean;
   timeS: number | null;
+  /** Earned the end-jump bonus point. */
   bonus: boolean;
   points: number;
+  /** End-jump distance (m), or null if the racer never jumped. */
+  jumpM?: number | null;
+  /** The jump attempt ended in a crash / rollover landing. */
+  jumpCrashed?: boolean;
 }
 export interface RaceResults {
   winner: RacerId | null;
@@ -73,9 +87,10 @@ export interface RaceResults {
   session: Record<RacerId, number>;
   /** Optional detail: how the winner was decided ('finish' = first across the line, 'distance' = timer ran out, 'tie'). */
   reason?: 'finish' | 'distance' | 'tie';
-  /** Optional: distance of the finish line / summit along the track (m), for result bars. */
+  /** Optional: distance of the finish line along the track (m), for result bars. */
   finishM?: number;
-  summitM?: number;
+  /** Optional: the end-jump bonus line (metres past the lip). */
+  jumpBonusM?: number;
 }
 
 type Handler<T> = (payload: T) => void;

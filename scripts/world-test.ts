@@ -1,11 +1,14 @@
 /**
- * Headless course test (no browser): builds the real RaceCourse with Rapier and drives it with a simple
+ * Headless course test (no browser): builds the real ~5 km RaceCourse with Rapier and drives it with a simple
  * centre-line follower (pure pursuit + speed from curvature), for several vehicles. Checks:
  *  - each car reaches the finish line without getting trapped (resets to the last checkpoint allowed, counted);
- *  - the bonus hill: the hill-climb stat decides it (monster/pickup summit in ~15–25 s, buggy/muscle slowly,
- *    sports only barely with a run-up, sedan never), asserted as ordering + time windows;
- *  - surfaces per zone, checkpoint spacing, spawn placement, animals bump and never stop a car,
- *    the off-road verge and valley walls keep a car that steers away inside the world.
+ *  - the end jump: fast/light cars (sports, muscle, buggy, pickup) land past the bonus line with a good
+ *    run-up, the monster truck and Grandma's sedan fall short; everyone lands on the wheels;
+ *  - surfaces per zone, checkpoint spacing, spawn placement, the gorge bridge, the riverside water,
+ *    animal schedule (4–6 per race, ≤ 2 damaging), every animal bumps (with the right `damaging` flag)
+ *    and never stops a car, the valley walls keep a car that steers away inside the world;
+ *  - the real computer driver completes the course on every difficulty, Hard takes the log bridge,
+ *    and it attempts the jump at full speed.
  * Run: npm run world-test   (WORLD_KINDS=pickup,sedan to limit)
  */
 import * as THREE from 'three';
@@ -18,9 +21,12 @@ g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: st
 const { initRapier, PhysicsWorld, PHYSICS_DT } = await import('../src/core/physics');
 const { events } = await import('../src/core/events');
 const { RaceCourse } = await import('../src/world/raceCourse');
+const { JUMP_BONUS_M } = await import('../src/world/layout');
 const { createVehicle } = await import('../src/vehicles/vehicle');
 const { VEHICLES } = await import('../src/vehicles/catalog');
 const { AIDriver, createPhysicsSensor } = await import('../src/ai');
+const { jumpRun } = await import('./jump-tune');
+const { ANIMAL_SPECS } = await import('../src/world/animals');
 type VehicleKind = import('../src/core/types').VehicleKind;
 
 await initRapier();
@@ -44,13 +50,15 @@ function makeWorld() {
 {
   const { world, scene, ms, physics } = makeWorld();
   const c = world.data;
-  console.log(`\n=== course: ${c.length.toFixed(0)} m, finish at ${c.finishS.toFixed(0)} m, summit at ${c.summitS.toFixed(0)} m (hill top ${c.hillTop.toFixed(1)} m high), built in ${ms.toFixed(0)} ms`);
-  check(c.length > 2300 && c.length < 2700, `length ~2.5 km (${c.length.toFixed(0)} m)`);
+  const j = world.jump;
+  console.log(`\n=== course: ${c.length.toFixed(0)} m, finish at ${c.finishS.toFixed(0)} m, jump lip at ${j.lipS.toFixed(0)} m, bonus line +${j.bonusM} m, built in ${ms.toFixed(0)} ms`);
+  check(c.finishS > 4400 && c.finishS < 5300, `race ~5 km to the finish line (${c.finishS.toFixed(0)} m)`);
   const ids = world.zones.map((z) => z.id).join(',');
-  check(ids === 'town,farm,mud,rocky,desert,river,finish,hill', `zones in order: ${ids}`);
+  check(ids === 'town,farm,mud,rocky,forest,canyon,snow,desert,river,finish,jump', `zones in order: ${ids}`);
+  console.log('  info zones: ' + world.zones.map((z) => `${z.id} ${(z.endS - z.startS).toFixed(0)} m`).join(', '));
   const cps = world.checkpoints.map((k) => k.s);
   const gaps = cps.map((s, i) => s - (i ? cps[i - 1] : 0));
-  check(gaps.every((d) => d > 250 && d < 360), `checkpoints ~every 300 m (${cps.map((s) => s.toFixed(0)).join(', ')})`);
+  check(gaps.every((d) => d > 250 && d < 380) && c.finishS - cps[cps.length - 1] < 380, `checkpoints ~every 300 m (${cps.length}: ${cps.map((s) => s.toFixed(0)).join(', ')})`);
   for (const cp of world.checkpoints) {
     const ok = world.surfaceAt(cp.respawn.x, cp.respawn.z) !== 'water' && Math.abs(cp.respawn.y - world.heightAt(cp.respawn.x, cp.respawn.z)) < 0.01;
     if (!ok) check(false, `checkpoint ${cp.index} respawn on solid ground`);
@@ -59,7 +67,19 @@ function makeWorld() {
   const sep = Math.hypot(sp.player.x - sp.cpu.x, sp.player.z - sp.cpu.z);
   check(sep > 4.5 && sep < 7 && Math.abs(sp.player.yaw - sp.cpu.yaw) < 0.01, `two side-by-side grid slots (${sep.toFixed(1)} m apart)`);
   // Surfaces along the centre-line per zone.
-  const expect: Record<string, string[]> = { town: ['asphalt'], farm: ['dirt'], mud: ['mud', 'dirt'], rocky: ['gravel'], desert: ['sand'], river: ['dirt', 'water'], finish: ['dirt'], hill: ['gravel'] };
+  const expect: Record<string, string[]> = {
+    town: ['asphalt'],
+    farm: ['dirt'],
+    mud: ['mud', 'dirt'],
+    rocky: ['gravel'],
+    forest: ['dirt'],
+    canyon: ['gravel'],
+    snow: ['gravel'],
+    desert: ['sand'],
+    river: ['dirt', 'water'],
+    finish: ['dirt', 'asphalt'],
+    jump: ['asphalt', 'dirt', 'sand'],
+  };
   for (const z of world.zones) {
     const counts: Record<string, number> = {};
     for (let s = z.startS + 6; s < z.endS - 6; s += 2) {
@@ -81,26 +101,84 @@ function makeWorld() {
     return n;
   })();
   check(mudCount > 120, `mud pit is ${mudCount} m long`);
-  // Hill: max climb angle along the centre-line.
-  let maxDeg = 0;
-  let maxAt = 0;
-  for (let s = c.hillStartS; s < c.summitS; s += 1) {
-    const a = world.track.pointAt(s);
-    const b = world.track.pointAt(s + 2);
-    const d = (Math.atan2(b.y - a.y, 2) * 180) / Math.PI;
-    if (d > maxDeg) {
-      maxDeg = d;
-      maxAt = s - c.hillStartS;
+  // Snowy pass climbs; grades stay drivable (< 12°) everywhere on the race route.
+  const snow = world.zones.find((zz) => zz.id === 'snow')!;
+  const rise = world.track.pointAt((snow.startS + snow.endS) / 2).y - world.track.pointAt(snow.startS - 250).y;
+  check(rise > 12, `snowy pass climbs ${rise.toFixed(1)} m`);
+  let maxGrade = 0;
+  let maxGradeAt = 0;
+  for (let s = 0; s < c.finishS; s += 2) {
+    if (c.onGorgeBridge(s) || c.onGorgeBridge(s + 4)) continue;
+    const a = world.track.pointAt(s).y;
+    const b = world.track.pointAt(s + 4).y;
+    const deg = (Math.atan2(Math.abs(b - a), 4) * 180) / Math.PI;
+    if (deg > maxGrade) {
+      maxGrade = deg;
+      maxGradeAt = s;
     }
   }
-  check(maxDeg > 33 && maxDeg < 39 && maxAt > 70, `bonus hill steepest ${maxDeg.toFixed(1)}° at ${maxAt.toFixed(0)} m up (near the top)`);
-  check(world.summit.y - world.track.pointAt(c.finishS).y > 25, `summit is ${(world.summit.y - world.track.pointAt(c.finishS).y).toFixed(1)} m above the finish (visible from afar)`);
+  check(maxGrade < 12, `steepest road grade before the finish ${maxGrade.toFixed(1)}° at s=${maxGradeAt.toFixed(0)} (${world.zoneAt(maxGradeAt).id})`);
+  // Gorge bridge: a real drop under the deck, deck continuous with the road at both ends.
+  {
+    const g = c.gorge;
+    const mid = c.centre(g.s);
+    const drop = c.gorgeDeckY(g.s) - c.heightAt(mid.x, mid.y);
+    check(drop > 8, `gorge is ${drop.toFixed(1)} m deep under the bridge`);
+    const e0 = c.centre(g.s0 + 0.5);
+    const e1 = c.centre(g.s1 - 0.5);
+    check(Math.abs(c.gorgeDeckY(g.s0 + 0.5) - c.heightAt(e0.x, e0.y)) < 0.4 && Math.abs(c.gorgeDeckY(g.s1 - 0.5) - c.heightAt(e1.x, e1.y)) < 0.4, 'gorge bridge deck meets the road at both ends');
+  }
+  // River: water beside the riverside road (on one side, not on the road).
+  {
+    const tagS = c.line.tagS.riverside!;
+    let water = 0;
+    let onRoad = 0;
+    for (let s = tagS; s < tagS + 140; s += 4) {
+      const p = world.track.pointAt(s);
+      const t = world.track.tangentAt(s);
+      for (const side of [-1, 1]) {
+        const x = p.x - t.z * 24 * side;
+        const z = p.z + t.x * 24 * side;
+        if (world.surfaceAt(x, z) === 'water') water++;
+      }
+      if (world.surfaceAt(p.x, p.z) === 'water') onRoad++;
+    }
+    check(water >= 30 && onRoad === 0, `river runs beside the riverside road (${water} water samples, ${onRoad} on the road)`);
+  }
+  // Jump: ramp, landing hill, bonus line inside the landing zone, no trees in the landing zone.
+  check(j.bonusS > j.lipS + 30 && j.bonusS < j.runoffS - 30, `bonus line ${j.bonusM} m past the lip, inside the landing zone (${(j.runoffS - j.lipS).toFixed(0)} m)`);
+  const drop = world.track.pointAt(j.lipS).y - world.track.pointAt(j.runoffS).y;
+  check(drop > 10, `landing hill drops ${drop.toFixed(1)} m below the lip`);
+  const blocked = [...c.trees, ...c.pines, ...c.snowPines].filter((t) => {
+    const f = c.fieldsAt(t.x, t.z);
+    return f.s > j.lipS - 5 && f.s < j.runoffS + 40 && f.d < c.halfWidthAt(f.s) + 12;
+  }).length;
+  check(blocked === 0, `landing zone is clear of trees (${blocked})`);
+  check(world.track.length - j.runoffS > 60, `run-off ${(world.track.length - j.runoffS).toFixed(0)} m after the landing zone`);
   check(world.shortcuts.length === 1 && world.shortcuts[0].id === 'log-bridge' && world.shortcuts[0].points.length >= 2, 'log-bridge shortcut published');
   // Verge vs road: wall height at 80 m off the road.
   const p = world.track.pointAt(600);
   const t = world.track.tangentAt(600);
   const wallY = world.heightAt(p.x - t.z * 80, p.z + t.x * 80);
   check(wallY - p.y > 12, `valley wall ${(wallY - p.y).toFixed(1)} m high 80 m off the road`);
+  // Animal schedule: 4–6 crossings per race, ≤ 2 damaging, all ≥ 300 m apart; every animal kind has a spot.
+  {
+    const kindsWithSpots = new Set(c.animalSpots.map((a) => a.kind));
+    const allKinds = Object.keys(ANIMAL_SPECS);
+    check(allKinds.every((k) => kindsWithSpots.has(k as never)), `every animal kind has a zone spot (${[...kindsWithSpots].join(', ')})`);
+    const sys = (world as unknown as { animalSys: { reset(seed?: number): void; planned: readonly { kind: string; s: number }[] } }).animalSys;
+    let ok = true;
+    const counts: number[] = [];
+    for (let seed = 1; seed <= 40; seed++) {
+      sys.reset(seed);
+      const pl = sys.planned;
+      counts.push(pl.length);
+      const dmg = pl.filter((a) => ANIMAL_SPECS[a.kind as keyof typeof ANIMAL_SPECS].damaging).length;
+      const apart = pl.every((a, i) => i === 0 || a.s - pl[i - 1].s > 250);
+      if (pl.length < 4 || pl.length > 6 || dmg > 2 || !apart) ok = false;
+    }
+    check(ok, `animal schedule: 4–6 crossings per race, ≤ 2 damaging, well apart (counts over 40 races: ${Math.min(...counts)}–${Math.max(...counts)})`);
+  }
   // Scene stats.
   let meshes = 0;
   let tris = 0;
@@ -120,40 +198,91 @@ function makeWorld() {
   physics.dispose();
 }
 
+// -------------------------------------------------------------- animals: each kind bumps (never stops a car)
+{
+  console.log('\n=== animals: drive into each kind ===');
+  for (const kind of Object.keys(ANIMAL_SPECS) as (keyof typeof ANIMAL_SPECS)[]) {
+    const { physics, world } = makeWorld();
+    const c = world.data;
+    const sys = (world as unknown as { animalSys: { plan: unknown[]; stage(p: unknown): void; byKind: Map<string, { state: string; stateT: number }[]>; reset(seed?: number): void } }).animalSys;
+    sys.reset(1);
+    const z = world.zones.find((zz) => zz.id === 'farm')!;
+    const s = z.startS + 30;
+    const v = createVehicle({ physics, surfaces: world, spec: VEHICLES.pickup, paint: 0, racer: 'player', spawn: c.spawnAt(s - 45, 0) });
+    let bump: { damaging?: boolean; speed?: number } | null = null;
+    const off = events.on('animal:bump', (e) => (bump ??= e));
+    // Stand the animal(s) in the middle of the road right in front of the car.
+    const plan = { spot: { kind, zone: 'farm', s }, side: 1, done: true, animals: sys.byKind.get(kind)! };
+    sys.plan = [plan];
+    sys.stage(plan);
+    const animals = plan.animals as unknown as { body: { setTranslation(p: object, w: boolean): void }; lift: number; state: string; position: THREE.Vector3 }[];
+    animals.forEach((a, i) => {
+      const p = c.spawnAt(s + i * 3, 0);
+      a.body.setTranslation({ x: p.x, y: p.y + a.lift + 0.05, z: p.z }, true);
+      a.state = 'waiting';
+    });
+    let minSpeed = Infinity;
+    let maxSpeed = 0;
+    let hit = false;
+    let after = 0;
+    for (let i = 0; i < 60 * 6; i++) {
+      if (hit && ++after > 60) break; // one second after the bump is enough
+      // Aim straight at the animal until the bump, then straight on.
+      hit ||= !!bump;
+      const a0 = animals[0].position;
+      const dx = a0.x - v.position.x;
+      const dz = a0.z - v.position.z;
+      const f = v.forward;
+      v.input.steer = hit ? 0 : THREE.MathUtils.clamp(-Math.atan2(f.z * dx - f.x * dz, f.x * dx + f.z * dz) * 2.5, -1, 1);
+      v.input.throttle = 1;
+      v.input.brake = 0;
+      world.fixedUpdate(PHYSICS_DT);
+      v.fixedUpdate!(PHYSICS_DT);
+      physics.step();
+      v.postPhysics!(PHYSICS_DT);
+      v.update!(PHYSICS_DT, 1);
+      world.update(PHYSICS_DT);
+      if (bump && !hit) maxSpeed = v.speed;
+      if (hit) minSpeed = Math.min(minSpeed, v.speed);
+    }
+    off();
+    const b = bump as { damaging?: boolean; speed?: number } | null;
+    const want = ANIMAL_SPECS[kind].damaging;
+    check(!!b && b.damaging === want && (b.speed ?? 0) > 3 && minSpeed > 0.4 * maxSpeed, `${kind}: bump ${b ? `damaging=${b.damaging} at ${b.speed?.toFixed(1)} m/s` : 'none'} (want damaging=${want}), car slowed to ${(minSpeed * 3.6).toFixed(0)} of ${(maxSpeed * 3.6).toFixed(0)} km/h`);
+    v.dispose();
+    world.dispose();
+    physics.dispose();
+  }
+}
+
 // -------------------------------------------------------------- drive
 interface DriveResult {
   finishedAt: number | null;
   maxS: number;
   resets: number;
-  summitAt: number | null;
-  hillBestUp: number;
   stuckAt: number[];
   bumps: number;
   hits: number;
-  minSpeedNearAnimal: number;
 }
 
-function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean; maxS?: number; wander?: boolean; fromFinish?: boolean } = {}): DriveResult {
+function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean; maxS?: number; wander?: boolean } = {}): DriveResult {
   const { physics, world } = makeWorld();
   world.animalsEnabled = opts.animals ?? true;
   const c = world.data;
-  const v = createVehicle({ physics, surfaces: world, spec: VEHICLES[kind], paint: 0xff0000, racer: 'player', spawn: opts.fromFinish ? world.data.spawnAt(world.data.finishS, 0) : world.spawns.player });
+  const v = createVehicle({ physics, surfaces: world, spec: VEHICLES[kind], paint: 0xff0000, racer: 'player', spawn: world.spawns.player });
   let bumps = 0;
   let hits = 0;
   const offs = [events.on('animal:bump', () => bumps++), events.on('obstacle:hit', () => hits++)];
-  const systems: import("../src/core/types").System[] = [world, v];
+  const systems: import('../src/core/types').System[] = [world, v];
   let s = 0;
   let lastCp = -1;
   let resets = 0;
   let finishedAt: number | null = null;
-  let summitAt: number | null = null;
-  let hillBestUp = 0;
   const stuckAt: number[] = [];
   let progressT = 0;
   let progressS = 0;
-  let minSpeedNearAnimal = Infinity;
   const target = new THREE.Vector3();
-  const maxT = opts.maxS ?? 420;
+  const maxT = opts.maxS ?? 700;
   const steps = Math.round(maxT / PHYSICS_DT);
   const sc = world.shortcuts[0];
   const useSc = !!opts.shortcut;
@@ -163,7 +292,7 @@ function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean;
     s = world.track.project(v.position, s).s;
     const spd = Math.max(0, v.speed);
     const look = 7 + spd * 0.55;
-    let ts = Math.min(world.track.length, s + look);
+    const ts = Math.min(world.track.length, s + look);
     if (useSc && s > sc.startS - 30 && s < sc.endS) {
       // Follow the shortcut polyline.
       const pts = sc.points;
@@ -198,14 +327,7 @@ function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean;
       }
       const surf = world.surfaceAt(v.position.x, v.position.z);
       const grip = surf === 'asphalt' ? 1 : surf === 'mud' || surf === 'sand' ? 0.6 : 0.8;
-      let vmax = maxTurn > 1e-3 ? Math.sqrt((6 * grip) / maxTurn) : 99;
-      if (s > c.hillStartS - 30) vmax = 99; // full send up the hill
-      // Slow for jump ramps a bit and for active animals ahead.
-      for (const a of world.animals) {
-        if (!a.active) continue;
-        const d = a.position.distanceTo(v.position);
-        if (d < 40) minSpeedNearAnimal = Math.min(minSpeedNearAnimal, spd);
-      }
+      const vmax = maxTurn > 1e-3 ? Math.sqrt((6 * grip) / maxTurn) : 99;
       v.input.steer = THREE.MathUtils.clamp(-ang * 2.2, -1, 1);
       v.input.throttle = spd < vmax ? 1 : 0;
       v.input.brake = spd > vmax + 3 ? 1 : 0;
@@ -219,47 +341,29 @@ function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean;
     // ---- bookkeeping
     while (lastCp + 1 < world.checkpoints.length && s >= world.checkpoints[lastCp + 1].s) lastCp++;
     if (finishedAt === null && s >= c.finishS) finishedAt = t;
-    if (s > c.hillStartS) hillBestUp = Math.max(hillBestUp, v.position.y - world.track.pointAt(c.hillStartS).y);
-    if (summitAt === null && v.position.distanceTo(world.summit) < 7 && v.position.y > world.summit.y - 3) summitAt = t;
-    if (summitAt !== null && t > summitAt + 1) break;
+    if (finishedAt !== null) break;
     // Stuck / flipped / out of the world → reset to the last checkpoint (like the Reset button).
     if (s > progressS + 3) {
       progressS = s;
       progressT = t;
     }
-    const fallen = v.position.y < world.heightAt(v.position.x, v.position.z) - 3;
-    const onHill = finishedAt !== null;
-    if ((!onHill && t - progressT > 8) || v.flipped || fallen) {
-      if (onHill) {
-        // On the hill a stall means "can't climb": stop trying after a few attempts.
-        resets++;
-        if (resets > 3) break;
-        v.reset(c.spawns.player.y !== undefined ? spawnAtS(world, c.finishS) : world.spawns.player);
-      } else {
-        stuckAt.push(Math.round(s));
-        resets++;
-        v.reset(lastCp >= 0 ? world.checkpoints[lastCp].respawn : world.spawns.player);
-      }
+    const fallen = v.position.y < world.heightAt(v.position.x, v.position.z) - 3 && !c.onGorgeBridge(s);
+    if (t - progressT > 8 || v.flipped || fallen) {
+      stuckAt.push(Math.round(s));
+      resets++;
+      v.reset(lastCp >= 0 ? world.checkpoints[lastCp].respawn : world.spawns.player);
       s = world.track.project(v.position).s;
       progressT = t;
       progressS = s;
     }
-    if (onHill && t - progressT > 6) {
-      // Stalled on the hill: done.
-      break;
-    }
     if (opts.wander && t > 22) break;
   }
   offs.forEach((f) => f());
-  const out = { finishedAt, maxS: Math.max(s, progressS), resets, summitAt, hillBestUp, stuckAt, bumps, hits, minSpeedNearAnimal };
+  const out = { finishedAt, maxS: Math.max(s, progressS), resets, stuckAt, bumps, hits };
   v.dispose();
   world.dispose();
   physics.dispose();
   return out;
-}
-
-function spawnAtS(world: InstanceType<typeof RaceCourse>, s: number) {
-  return world.data.spawnAt(s, 0);
 }
 
 const kinds = (process.env.WORLD_KINDS?.split(',') ?? ['pickup', 'sedan', 'sports', 'monster', 'buggy', 'muscle']) as VehicleKind[];
@@ -270,48 +374,32 @@ for (const kind of kinds) {
   const r = drive(kind);
   results[kind] = r;
   console.log(
-    `  info finish ${r.finishedAt?.toFixed(1) ?? '—'} s, resets ${r.resets} ${r.stuckAt.length ? `(stuck at s=${r.stuckAt.join(', ')})` : ''}, hill best ${r.hillBestUp.toFixed(1)} m of ${(0).toFixed(0)}, summit ${r.summitAt ? `${(r.summitAt - (r.finishedAt ?? 0)).toFixed(1)} s after finish` : 'no'}, obstacle hits ${r.hits}, animal bumps ${r.bumps} (${((performance.now() - t0) / 1000).toFixed(1)} s wall)`,
+    `  info finish ${r.finishedAt?.toFixed(1) ?? '—'} s, resets ${r.resets} ${r.stuckAt.length ? `(stuck at s=${r.stuckAt.join(', ')})` : ''}, obstacle hits ${r.hits}, animal bumps ${r.bumps} (${((performance.now() - t0) / 1000).toFixed(1)} s wall)`,
   );
   check(r.finishedAt !== null, `${kind} reaches the finish line (${r.finishedAt?.toFixed(1) ?? 'never'} s)`);
   check(r.stuckAt.length <= 1, `${kind} never trapped (${r.stuckAt.length} stuck resets)`);
 }
-// Bonus hill after a full race (arriving at speed): the hill-climb stat must clearly decide it
-// (SPEC: "hard to get up", sedan "nearly impossible"). Times are seconds after crossing the finish line.
-const BONUS_WINDOW = 45;
-const after = (r?: DriveResult): number | null => (r && r.summitAt !== null && r.finishedAt !== null ? r.summitAt - r.finishedAt : null);
-const fmt = (x: number | null, r?: DriveResult): string => (x !== null ? `${x.toFixed(1)} s` : `stalled ${r?.hillBestUp.toFixed(0)} m up`);
-const inRange = (x: number | null, lo: number, hi: number): boolean => x !== null && x >= lo && x <= hi;
-const slowerThan = (a: number | null, b: number | null): boolean => b !== null && (a === null || a > b);
-if (results.pickup) { const x = after(results.pickup); check(inRange(x, 12, 30), `pickup summits reliably but not trivially (${fmt(x, results.pickup)}, want 12–30 s)`); }
-if (results.monster) { const x = after(results.monster); check(inRange(x, 12, 30), `monster truck summits reliably but not trivially (${fmt(x, results.monster)}, want 12–30 s)`); }
-for (const k of ['buggy', 'muscle'] as const) {
-  if (!results[k]) continue;
-  const x = after(results[k]);
-  check(inRange(x, 20, BONUS_WINDOW), `${k} makes it with its run-up, slowly (${fmt(x, results[k])}, want 20–${BONUS_WINDOW} s)`);
-  for (const strong of ['pickup', 'monster'] as const) if (results[strong]) check(slowerThan(x, after(results[strong])), `${k} climbs slower than the ${strong}`);
-}
-if (results.sports) {
-  const x = after(results.sports);
-  check(x === null || x >= 30, `sports car (hill-climb 2) only barely makes it with a run-up (${fmt(x, results.sports)}, want ≥ 30 s or a stall)`);
-  for (const mid of ['buggy', 'muscle'] as const) if (results[mid]) check(slowerThan(x, after(results[mid])), `sports car climbs slower than the ${mid}`);
-}
-if (results.sedan) check(results.sedan.summitAt === null, `grandma's sedan cannot make the summit (best ${results.sedan.hillBestUp.toFixed(1)} m up)`);
-if (results.pickup && results.sedan) check(results.pickup.hillBestUp > results.sedan.hillBestUp, 'pickup climbs higher than the sedan');
+const fin = kinds.map((k) => results[k].finishedAt).filter((x): x is number => x !== null);
+if (fin.length) check(Math.max(...fin) < 420, `every finish well inside the 8-minute timer (slowest ${Math.max(...fin).toFixed(0)} s)`);
 
-// Standing start from the finish line (what a Reset on the hill gives you): the stat should decide it.
-console.log('\n=== bonus hill from a standing start at the finish line ===');
-const standing: Record<string, DriveResult> = {};
+// -------------------------------------------------------------- end jump outcomes (SPEC round 2)
+// A good run-up: full throttle from 170 m before the finish line (arriving at speed), and from a standing
+// start at the finish line (what a Reset after the finish gives you). Jump distance = lip → touchdown.
+console.log('\n=== end jump ===');
+const MAKES_IT = ['sports', 'muscle', 'buggy', 'pickup'];
 for (const kind of kinds) {
-  const r = (standing[kind] = drive(kind, { fromFinish: true, animals: false, maxS: 60 }));
-  console.log(`  info ${kind}: ${r.summitAt !== null ? `summit in ${r.summitAt.toFixed(1)} s` : `stalled ${r.hillBestUp.toFixed(1)} m up`}`);
+  for (const [label, before] of [['run-up', 170], ['standing start at the finish', 0]] as const) {
+    const r = jumpRun(kind, before);
+    console.log(`  info ${kind} (${label}): lip ${r.lipKmh.toFixed(0)} km/h, ${r.dist.toFixed(1)} m, air ${r.air.toFixed(2)} s, impact ${r.impact.toFixed(1)} m/s, ${r.upright ? 'on its wheels' : 'CRASH'}${r.bonus ? ', BONUS' : ''}`);
+    check(r.upright, `${kind} (${label}) lands on its wheels`);
+    if (MAKES_IT.includes(kind)) check(r.bonus, `${kind} (${label}) clears the bonus line (${r.dist.toFixed(1)} m)`);
+    else check(!r.bonus, `${kind} (${label}) falls short of the bonus line (${r.dist.toFixed(1)} m)`);
+    if (kind === 'sedan') check(r.dist < jumpBonusM() - 6, `Grandma's sedan is nowhere near (${r.dist.toFixed(1)} m)`);
+  }
 }
-const st = (k: string): number | null => standing[k]?.summitAt ?? null;
-if (standing.pickup) check(inRange(st('pickup'), 15, 35), `pickup summits from a standing start within the bonus window (${fmt(st('pickup'), standing.pickup)}, want 15–35 s)`);
-if (standing.monster) check(inRange(st('monster'), 15, 30), `monster summits from a standing start (${fmt(st('monster'), standing.monster)}, want 15–30 s)`);
-if (standing.monster && standing.pickup) check(slowerThan(st('pickup'), st('monster')), 'monster (hill-climb 5) beats the pickup (4) from a standing start');
-for (const k of ['buggy', 'muscle'] as const) if (standing[k] && standing.pickup) check(slowerThan(st(k), st('pickup')), `${k} (hill-climb 3) is slower than the pickup from a standing start (${fmt(st(k), standing[k])})`);
-if (standing.sports) check(st('sports') === null || st('sports')! > 38, `sports car fails (or only just makes it) without a run-up (${fmt(st('sports'), standing.sports)})`);
-if (standing.sedan) check(standing.sedan.summitAt === null, `sedan stalls from a standing start (${standing.sedan.hillBestUp.toFixed(1)} m up)`);
+function jumpBonusM(): number {
+  return JUMP_BONUS_M;
+}
 
 if (!process.env.WORLD_KINDS || process.env.WORLD_SHORTCUT) {
   console.log('\n=== drive: pickup takes the log-bridge shortcut ===');
@@ -340,17 +428,22 @@ if (!process.env.WORLD_KINDS || process.env.WORLD_AI) {
     let resets = 0;
     let lastCp = -1;
     let s = 0;
+    let finished = false;
     ai.onRequestReset = () => {
       resets++;
       if (process.env.VERBOSE) console.log(`    reset requested at s=${s.toFixed(0)} (${world.zoneAt(s).id}) pos y=${v.position.y.toFixed(1)}`);
-      v.reset(lastCp >= 0 ? world.checkpoints[lastCp].respawn : world.spawns.cpu);
+      v.reset(finished ? world.data.spawnAt(world.track.finishS, 0) : lastCp >= 0 ? world.checkpoints[lastCp].respawn : world.spawns.cpu);
     };
-    const sc = world.shortcuts[0];
     let onShortcut = 0;
     let finish: number | null = null;
-    let summit: number | null = null;
-    let best = 0;
-    for (let i = 0; i < 60 * 260; i++) {
+    let lipKmh = 0;
+    let air = false;
+    let jumpM: number | null = null;
+    let upright = true;
+    let landT = 0;
+    const up = new THREE.Vector3();
+    const j = world.jump;
+    for (let i = 0; i < 60 * 520; i++) {
       const t = i * PHYSICS_DT;
       ai.fixedUpdate(PHYSICS_DT);
       world.fixedUpdate!(PHYSICS_DT);
@@ -362,28 +455,36 @@ if (!process.env.WORLD_KINDS || process.env.WORLD_AI) {
       s = pr.s;
       while (lastCp + 1 < world.checkpoints.length && s >= world.checkpoints[lastCp + 1].s) lastCp++;
       if (world.data.shortcutDist(v.position.x, v.position.z).d < 3 && world.data.fieldsAt(v.position.x, v.position.z).d > 30) onShortcut++; // on the bridge line, far from the ford road
-      if (finish === null && s >= world.track.finishS) finish = t;
-      if (finish !== null) best = Math.max(best, v.position.y - world.track.pointAt(world.data.hillStartS).y);
-      if (summit === null && v.position.distanceTo(world.summit) < 7) {
-        summit = t;
-        break;
+      if (finish === null && s >= world.track.finishS) {
+        finish = t;
+        finished = true;
       }
-      if (finish !== null && t > finish + 45) break;
+      if (finish !== null) {
+        if (s > j.lipS - 3 && s < j.lipS + 1) lipKmh = Math.max(lipKmh, v.speed * 3.6);
+        if (!air && jumpM === null && s > j.lipS - 4 && s < j.lipS + 15 && v.wheelsOnGround === 0 && v.airTime > 0.12) air = true;
+        if (air && jumpM === null && v.wheelsOnGround >= 2) jumpM = s - j.lipS;
+        if (jumpM !== null) {
+          landT += PHYSICS_DT;
+          if (up.set(0, 1, 0).applyQuaternion(v.quaternion).y < 0.5) upright = false;
+          if (landT > 1.2) break;
+        }
+        if (t > finish + 45) break;
+      }
     }
     v.dispose();
     world.dispose();
     physics.dispose();
-    return { finish, summit, resets, shortcut: onShortcut > 30, best };
+    return { finish, resets, shortcut: onShortcut > 30, lipKmh, jumpM, upright, top: VEHICLES[kind] };
   };
-  for (const [kind, d] of [['pickup', 'hard'], ['pickup', 'easy'], ['sedan', 'normal'], ['monster', 'normal'], ['buggy', 'normal'], ['sports', 'normal']] as const) {
+  for (const [kind, d] of [['pickup', 'hard'], ['pickup', 'easy'], ['sedan', 'normal'], ['monster', 'normal'], ['buggy', 'normal'], ['sports', 'normal'], ['muscle', 'easy']] as const) {
     const r = aiRun(kind, d);
-    console.log(`  info ${kind}/${d}: finish ${r.finish?.toFixed(1) ?? '—'} s, summit ${r.summit !== null && r.finish !== null ? `+${(r.summit - r.finish).toFixed(1)} s` : `no (best ${r.best.toFixed(1)} m up)`}, resets ${r.resets}, log bridge ${r.shortcut ? 'yes' : 'no'}`);
+    console.log(`  info ${kind}/${d}: finish ${r.finish?.toFixed(1) ?? '—'} s, resets ${r.resets}, log bridge ${r.shortcut ? 'yes' : 'no'}, jump ${r.jumpM?.toFixed(1) ?? '—'} m at ${r.lipKmh.toFixed(0)} km/h ${r.upright ? '' : '(CRASH)'}`);
     check(r.finish !== null && r.resets <= 1, `computer ${kind} on ${d} completes the course (${r.resets} resets)`);
     if (d === 'hard') check(r.shortcut, 'Hard computer takes the log bridge');
     if (d === 'easy') check(!r.shortcut, 'Easy computer stays on the road (ford)');
-    if (kind === 'pickup' || kind === 'monster' || kind === 'buggy') check(r.summit !== null && r.finish !== null && r.summit - r.finish <= 45, `computer ${kind} climbs the bonus hill inside the 45 s window`);
-    if (kind === 'sports') check(r.summit !== null || r.best > 40, `computer sports car makes a real attempt at the hill (best ${r.best.toFixed(0)} m up)`);
-    if (kind === 'sedan') check(r.summit === null, 'computer sedan cannot climb the bonus hill');
+    check(r.jumpM !== null && r.upright, `computer ${kind}/${d} attempts the jump and lands on its wheels`);
+    if (MAKES_IT.includes(kind)) check((r.jumpM ?? 0) >= jumpBonusM(), `computer ${kind}/${d} (full speed even on ${d}) earns the jump bonus (${r.jumpM?.toFixed(1)} m)`);
+    else check((r.jumpM ?? 0) < jumpBonusM(), `computer ${kind}/${d} falls short (${r.jumpM?.toFixed(1)} m)`);
   }
 }
 

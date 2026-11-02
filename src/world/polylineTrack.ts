@@ -16,7 +16,6 @@ export class PolylineTrack implements TrackPath {
     points: THREE.Vector3[],
     halfWidth: number | number[],
     readonly finishS: number,
-    readonly summitS: number,
   ) {
     if (points.length < 2) throw new Error('PolylineTrack needs at least 2 points');
     this.pts = points.map((p) => p.clone());
@@ -27,10 +26,10 @@ export class PolylineTrack implements TrackPath {
   }
 
   /** Build from control points via a centripetal Catmull-Rom spline, sampled every `step` metres. */
-  static fromControlPoints(ctrl: THREE.Vector3[], halfWidth: number, finishS: number, summitS: number, step = 2): PolylineTrack {
+  static fromControlPoints(ctrl: THREE.Vector3[], halfWidth: number, finishS: number, step = 2): PolylineTrack {
     const curve = new THREE.CatmullRomCurve3(ctrl, false, 'centripetal');
     const n = Math.max(2, Math.ceil(curve.getLength() / step));
-    return new PolylineTrack(curve.getSpacedPoints(n), halfWidth, finishS, summitS);
+    return new PolylineTrack(curve.getSpacedPoints(n), halfWidth, finishS);
   }
 
   private segAt(s: number): number {

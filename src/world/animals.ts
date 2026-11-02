@@ -8,13 +8,14 @@ import { paint } from './props';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /**
- * Animals (SPEC, requested by Brooks): rare (2–3 per race), zone-matched, cross the road ahead of the
- * leading car, bump cars rather than stop them, and scamper off on contact — never hurt.
+ * Animals (SPEC, requested by Brooks): rare (4–6 per race on the 5 km course), zone-matched, cross the road
+ * ahead of the leading car, bump cars rather than stop them, and scamper off on contact — never hurt.
+ * Big ones (bear, moose, bull, boar, croc) are "damaging": their `animal:bump` carries `damaging: true`
+ * and the relative impact speed, and the vehicles' damage system decides what that costs the car.
  *
- * Physics: each animal is a light DYNAMIC capsule with rotations locked (deer 70 kg, bear 160 kg,
- * mouse 6 kg, duck 3 kg, croc 120 kg vs. cars 1–2 t). We steer it by setting its horizontal velocity,
- * so a car simply shoves it aside (a small bump for the car, a tumble-free "boing" for the animal).
- * Wheel rays don't hit ANIMAL, so cars never drive up onto them.
+ * Physics: each animal is a light DYNAMIC capsule with rotations locked (rabbit 3 kg … bull 250 kg vs.
+ * cars 1–2 t). We steer it by setting its horizontal velocity, so a car simply shoves it aside (a bump for
+ * the car, a tumble-free "boing" for the animal). Wheel rays don't hit ANIMAL, so cars never drive up onto them.
  */
 export type AnimalKind = AnimalSpot['kind'];
 
@@ -29,6 +30,8 @@ export interface AnimalInfo {
   readonly active: boolean;
   /** Horizontal velocity (m/s). */
   readonly velocity: THREE.Vector3;
+  /** Big animal: hitting it damages the car. */
+  readonly damaging: boolean;
 }
 
 interface Spec {
@@ -40,15 +43,31 @@ interface Spec {
   /** Stride frequency per m/s. */
   stride: number;
   count: number;
+  /** Damages the car on contact (SPEC round 2: bear, moose, bull, boar, crocodile). */
+  damaging: boolean;
 }
 
-const SPECS: Record<AnimalKind, Spec> = {
-  deer: { mass: 70, radius: 0.45, halfHeight: 0.5, speed: 7.5, stride: 0.9, count: 1 },
-  bear: { mass: 160, radius: 0.65, halfHeight: 0.35, speed: 4.5, stride: 1.1, count: 1 },
-  mouse: { mass: 6, radius: 0.22, halfHeight: 0.05, speed: 3.6, stride: 3.0, count: 1 },
-  duck: { mass: 3, radius: 0.22, halfHeight: 0.1, speed: 1.6, stride: 3.5, count: 4 },
-  croc: { mass: 120, radius: 0.45, halfHeight: 0.9, speed: 2.4, stride: 1.4, count: 1 },
+export const ANIMAL_SPECS: Record<AnimalKind, Spec> = {
+  deer: { mass: 70, radius: 0.45, halfHeight: 0.5, speed: 7.5, stride: 0.9, count: 1, damaging: false },
+  bear: { mass: 160, radius: 0.65, halfHeight: 0.35, speed: 4.5, stride: 1.1, count: 1, damaging: true },
+  mouse: { mass: 6, radius: 0.22, halfHeight: 0.05, speed: 3.6, stride: 3.0, count: 1, damaging: false },
+  duck: { mass: 3, radius: 0.22, halfHeight: 0.1, speed: 1.6, stride: 3.5, count: 4, damaging: false },
+  croc: { mass: 120, radius: 0.45, halfHeight: 0.9, speed: 2.4, stride: 1.4, count: 1, damaging: true },
+  moose: { mass: 220, radius: 0.6, halfHeight: 0.75, speed: 5.5, stride: 0.75, count: 1, damaging: true },
+  boar: { mass: 80, radius: 0.4, halfHeight: 0.25, speed: 6, stride: 1.7, count: 1, damaging: true },
+  bull: { mass: 250, radius: 0.65, halfHeight: 0.45, speed: 4.5, stride: 0.95, count: 1, damaging: true },
+  cow: { mass: 200, radius: 0.6, halfHeight: 0.45, speed: 2.6, stride: 0.95, count: 2, damaging: false },
+  goat: { mass: 40, radius: 0.32, halfHeight: 0.25, speed: 6, stride: 1.8, count: 2, damaging: false },
+  rabbit: { mass: 3, radius: 0.2, halfHeight: 0.05, speed: 6.5, stride: 2.2, count: 2, damaging: false },
+  camel: { mass: 220, radius: 0.6, halfHeight: 0.8, speed: 3.6, stride: 0.7, count: 1, damaging: false },
 };
+const SPECS = ANIMAL_SPECS;
+/** Encounters per race (SPEC round 2: about 4–6 on the 5 km course), and at most this many damaging ones. */
+const MIN_CROSSINGS = 4;
+const MAX_CROSSINGS = 6;
+const MAX_DAMAGING = 2;
+/** Crossings are at least this far apart along the course (m). */
+const MIN_GAP_M = 300;
 
 type State = 'parked' | 'waiting' | 'crossing' | 'leaving' | 'fleeing';
 
@@ -71,6 +90,7 @@ class Animal implements AnimalInfo {
   spotS = 0;
   heading = 0;
   lastBump = -9;
+  readonly damaging: boolean;
   constructor(
     readonly kind: AnimalKind,
     readonly spec: Spec,
@@ -78,6 +98,7 @@ class Animal implements AnimalInfo {
     parent: THREE.Object3D,
   ) {
     this.radius = spec.radius * (kind === 'croc' ? 2.2 : 1.4);
+    this.damaging = spec.damaging;
     this.body = physics.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic().setTranslation(0, -200, 0).lockRotations().setLinearDamping(0.5).setCanSleep(false).setEnabled(false),
     );
@@ -143,27 +164,33 @@ export class Animals {
       if (other?.kind !== 'vehicle') return;
       if (this.time - a.lastBump < 1) return;
       a.lastBump = this.time;
-      events.emit('animal:bump', { kind: a.kind, racer: other.racer as RacerId, x: a.position.x, z: a.position.z });
+      // Relative horizontal impact speed (car vs animal) at first contact.
+      // `a.velocity` is the animal's velocity before this physics step (after the step it has already been shoved).
+      const car = physics.world.getCollider(this.byHandle.has(h1) ? h2 : h1)?.parent();
+      const cv = car?.linvel() ?? { x: 0, y: 0, z: 0 };
+      const speed = Math.hypot(cv.x - a.velocity.x, cv.z - a.velocity.z);
+      events.emit('animal:bump', { kind: a.kind, racer: other.racer as RacerId, x: a.position.x, z: a.position.z, damaging: a.damaging, speed });
       this.flee(a);
     });
     this.reset();
   }
 
-  /** New race: pick 2–3 crossings from the zone-matched spots, park everything. */
+  /** New race: pick 4–6 crossings from the zone-matched spots, park everything. */
   reset(seed?: number): void {
     if (seed !== undefined) this.rand = rng(seed);
     for (const a of this.list) this.park(a);
     const spots = [...this.c.animalSpots];
-    // Shuffle, then take up to 3 that are well apart and use different animals.
+    // Shuffle, then take 4–6 that are well apart, use different animals and at most two big (damaging) ones.
     for (let i = spots.length - 1; i > 0; i--) {
       const j = Math.floor(this.rand() * (i + 1));
       [spots[i], spots[j]] = [spots[j], spots[i]];
     }
-    const want = this.rand() < 0.5 ? 2 : 3;
+    const want = MIN_CROSSINGS + Math.floor(this.rand() * (MAX_CROSSINGS - MIN_CROSSINGS + 1));
     const chosen: AnimalSpot[] = [];
     for (const sp of spots) {
       if (chosen.length >= want) break;
-      if (chosen.some((c) => Math.abs(c.s - sp.s) < 300 || c.kind === sp.kind)) continue;
+      if (chosen.some((c) => Math.abs(c.s - sp.s) < MIN_GAP_M || c.kind === sp.kind)) continue;
+      if (SPECS[sp.kind].damaging && chosen.filter((c) => SPECS[c.kind].damaging).length >= MAX_DAMAGING) continue;
       chosen.push(sp);
     }
     chosen.sort((a, b) => a.s - b.s);
@@ -259,13 +286,14 @@ export class Animals {
     const hw = this.c.halfWidthAt(s);
     const start = this.c.spawnAt(s, p.side * (hw + 6));
     const end = this.c.spawnAt(s + 6, -p.side * (hw + 30));
+    const herd = p.animals[0].kind === 'cow' || p.animals[0].kind === 'goat';
     p.animals.forEach((a, i) => {
-      const back = i * 0.9;
+      const back = i * (herd ? 2.4 : 0.9);
       const lat = p.side * (hw + 6 + back);
       const sp = this.c.spawnAt(s - i * 0.4, lat);
       a.from.set(sp.x, sp.z);
       a.to.set(end.x - (start.x - sp.x), end.z - (start.z - sp.z));
-      a.delay = i * 0.45;
+      a.delay = i * (herd ? 0.9 : 0.45);
       a.state = 'waiting';
       a.stateT = 0;
       a.freeT = 0;
@@ -309,6 +337,12 @@ export class Animals {
         speed = a.spec.speed * (a.state === 'fleeing' ? 1.35 : 1);
         if (a.state === 'crossing' && f.d > this.c.halfWidthAt(f.s) + 4 && a.stateT > 2) a.state = 'leaving';
       }
+    }
+    // A car right on top of it: let physics push it around rather than steering it into the car (a
+    // velocity-driven body would act like a wall and stop the car).
+    for (const r of this.racers) {
+      const p = r.body.translation();
+      if ((p.x - t.x) ** 2 + (p.z - t.z) ** 2 < (a.radius + 3) ** 2) a.freeT = Math.max(a.freeT, 0.25);
     }
     if (a.freeT > 0) a.freeT -= dt;
     else {
@@ -479,6 +513,159 @@ function buildAnimalModel(kind: AnimalKind): AnimalModel {
           body.geometry.dispose();
         },
       };
+    }
+    case 'moose': {
+      // Tall, dark, humped shoulders, long legs, big flat (palmate) antlers and a droopy nose.
+      const fur = 0x4a3222;
+      const dark = 0x2e1f15;
+      const antler = 0xcbb58e;
+      const parts = [
+        part(ball(0.55, 10, 7), fur, 0, 1.75, -0.1, 0.8, 0.75, 1.55),
+        part(ball(0.45, 8, 6), dark, 0, 2.0, 0.45, 0.85, 0.9, 0.9), // shoulder hump
+        part(cyl(0.16, 0.2, 0.6), fur, 0, 2.05, 0.85, 1, 1, 1, -0.9),
+        part(box(0.3, 0.32, 0.62), fur, 0, 2.15, 1.25, 1, 1, 1, 0.35), // long head
+        part(ball(0.17, 8, 6), dark, 0, 1.98, 1.5, 1.1, 0.95, 1.1), // big droopy nose
+        part(box(0.08, 0.32, 0.08), dark, 0, 1.75, 1.05), // dewlap
+        part(ball(0.04, 6, 4), 0x111111, 0.14, 2.28, 1.2),
+        part(ball(0.04, 6, 4), 0x111111, -0.14, 2.28, 1.2),
+        part(box(0.06, 0.16, 0.2), fur, 0.2, 2.42, 1.05),
+        part(box(0.06, 0.16, 0.2), fur, -0.2, 2.42, 1.05),
+        // Palmate antlers: a flat paddle each side with tines.
+        part(box(0.62, 0.06, 0.34), antler, 0.48, 2.55, 1.0, 1, 1, 1, 0),
+        part(box(0.62, 0.06, 0.34), antler, -0.48, 2.55, 1.0, 1, 1, 1, 0),
+        part(cyl(0.035, 0.04, 0.3), antler, 0.25, 2.45, 1.05),
+        part(cyl(0.035, 0.04, 0.3), antler, -0.25, 2.45, 1.05),
+      ];
+      for (const sx of [-1, 1]) for (let t = 0; t < 4; t++) parts.push(part(box(0.05, 0.16, 0.05), antler, sx * (0.3 + t * 0.14), 2.65, 0.88 + (t % 2) * 0.14));
+      parts.push(part(ball(0.08, 6, 4), dark, 0, 1.8, -0.98)); // stubby tail
+      const leg = (): THREE.BufferGeometry => mergeGeometries([part(cyl(0.08, 0.06, 1.35), fur, 0, -0.67, 0), part(box(0.11, 0.1, 0.13), 0x1a1210, 0, -1.34, 0.02)])!;
+      return quadruped(parts, leg, [[0.24, 1.42, 0.55], [-0.24, 1.42, 0.55], [0.24, 1.42, -0.6], [-0.24, 1.42, -0.6]], 0.55);
+    }
+    case 'boar': {
+      // Stocky, dark bristly back, wedge head with a pink snout and white tusks.
+      const fur = 0x5b4a3c;
+      const parts = [
+        part(ball(0.42, 10, 7), fur, 0, 0.62, 0, 0.85, 0.85, 1.45),
+        part(box(0.12, 0.18, 1.0), 0x2c231c, 0, 1.0, 0.05), // bristle ridge
+        part(cyl(0.1, 0.3, 0.55, 7), fur, 0, 0.62, 0.72, 1, 1, 1, Math.PI / 2), // wedge head
+        part(cyl(0.11, 0.11, 0.06, 8), 0xc98a86, 0, 0.6, 1.0, 1, 1, 1, Math.PI / 2), // snout disc
+        part(cyl(0.02, 0.035, 0.18, 4), 0xf4efe0, 0.1, 0.62, 0.95, 1, 1, 1, -0.6),
+        part(cyl(0.02, 0.035, 0.18, 4), 0xf4efe0, -0.1, 0.62, 0.95, 1, 1, 1, -0.6),
+        part(ball(0.035, 6, 4), 0x111111, 0.12, 0.76, 0.75),
+        part(ball(0.035, 6, 4), 0x111111, -0.12, 0.76, 0.75),
+        part(box(0.07, 0.16, 0.1), 0x3a2e25, 0.16, 0.92, 0.55),
+        part(box(0.07, 0.16, 0.1), 0x3a2e25, -0.16, 0.92, 0.55),
+        part(cyl(0.02, 0.02, 0.25, 4), 0x2c231c, 0, 0.7, -0.68, 1, 1, 1, 0.5),
+      ];
+      const leg = (): THREE.BufferGeometry => part(cyl(0.07, 0.055, 0.42, 5), 0x3a2e25, 0, -0.21, 0);
+      return quadruped(parts, leg, [[0.18, 0.42, 0.35], [-0.18, 0.42, 0.35], [0.18, 0.42, -0.35], [-0.18, 0.42, -0.35]], 0.75);
+    }
+    case 'bull':
+    case 'cow': {
+      // Bull: black, wide horns, nose ring. Cow: white with black patches, pink udder, little horns.
+      const bull = kind === 'bull';
+      const hide = bull ? 0x2a2420 : 0xf2efe8;
+      const patch = bull ? 0x1a1614 : 0x1f1c1a;
+      const parts = [
+        part(box(0.95, 0.85, 1.9), hide, 0, 1.15, 0),
+        part(box(0.88, 0.2, 1.8), hide, 0, 1.62, 0),
+        part(box(0.5, 0.55, 0.55), hide, 0, 1.38, 1.15, 1, 1, 1, 0.25), // head
+        part(box(0.42, 0.3, 0.2), bull ? 0x4a3a33 : 0xe8a6a0, 0, 1.18, 1.45), // muzzle
+        part(ball(0.035, 6, 4), 0x111111, 0.19, 1.5, 1.3),
+        part(ball(0.035, 6, 4), 0x111111, -0.19, 1.5, 1.3),
+        part(box(0.2, 0.08, 0.12), hide, 0.34, 1.55, 1.05),
+        part(box(0.2, 0.08, 0.12), hide, -0.34, 1.55, 1.05),
+        // Horns (the bull's sweep out sideways and up).
+        part(cyl(0.035, 0.06, bull ? 0.5 : 0.22, 5).rotateZ(bull ? -1.0 : -0.3), 0xe9dfc4, bull ? 0.42 : 0.2, 1.72, 1.1),
+        part(cyl(0.035, 0.06, bull ? 0.5 : 0.22, 5).rotateZ(bull ? 1.0 : 0.3), 0xe9dfc4, bull ? -0.42 : -0.2, 1.72, 1.1),
+        part(cyl(0.02, 0.02, 0.5, 4), patch, 0, 1.2, -1.0, 1, 1, 1, 0.3), // tail
+        part(ball(0.07, 5, 4), patch, 0, 0.95, -1.12),
+      ];
+      if (bull) {
+        // A gold nose ring.
+        parts.push(part(new THREE.TorusGeometry(0.08, 0.018, 4, 10), 0xe0b030, 0, 1.08, 1.56));
+      } else {
+        // Black patches (flattened blobs on the flanks and back) and a pink udder.
+        for (const [x, y, z, sx] of [[0.47, 1.2, 0.3, 1], [-0.47, 1.05, -0.4, 1], [0.47, 1.0, -0.55, 0.8], [0, 1.72, 0.2, 1.1], [-0.47, 1.3, 0.45, 0.7]] as const)
+          parts.push(part(ball(0.32, 7, 5), patch, x, y, z, 0.25, sx, sx * 1.2));
+        parts.push(part(ball(0.18, 8, 6), 0xf0a8b4, 0, 0.72, -0.45, 1, 0.7, 1));
+      }
+      const leg = (): THREE.BufferGeometry => mergeGeometries([part(box(0.18, 0.78, 0.18), hide, 0, -0.39, 0), part(box(0.2, 0.12, 0.2), 0x2a2420, 0, -0.78, 0)])!;
+      return quadruped(parts, leg, [[0.32, 0.82, 0.7], [-0.32, 0.82, 0.7], [0.32, 0.82, -0.7], [-0.32, 0.82, -0.7]], 0.45);
+    }
+    case 'goat': {
+      // Small, pale, curved-back horns and a little beard.
+      const fur = 0xe6e0d2;
+      const parts = [
+        part(ball(0.32, 8, 6), fur, 0, 0.78, 0, 0.8, 0.8, 1.45),
+        part(cyl(0.08, 0.1, 0.35), fur, 0, 1.0, 0.42, 1, 1, 1, -0.5),
+        part(box(0.2, 0.22, 0.34), fur, 0, 1.15, 0.6, 1, 1, 1, 0.4),
+        part(box(0.06, 0.16, 0.06), 0x8a7f6c, 0, 0.98, 0.72), // beard
+        part(ball(0.03, 6, 4), 0x111111, 0.09, 1.22, 0.62),
+        part(ball(0.03, 6, 4), 0x111111, -0.09, 1.22, 0.62),
+        part(cyl(0.02, 0.04, 0.28, 4), 0x6b6150, 0.07, 1.36, 0.48, 1, 1, 1, -1.1),
+        part(cyl(0.02, 0.04, 0.28, 4), 0x6b6150, -0.07, 1.36, 0.48, 1, 1, 1, -1.1),
+        part(box(0.14, 0.05, 0.08), fur, 0.15, 1.2, 0.5),
+        part(box(0.14, 0.05, 0.08), fur, -0.15, 1.2, 0.5),
+        part(box(0.06, 0.12, 0.06), fur, 0, 0.98, -0.45, 1, 1, 1, -0.6),
+      ];
+      const leg = (): THREE.BufferGeometry => mergeGeometries([part(cyl(0.04, 0.035, 0.55, 5), fur, 0, -0.27, 0), part(box(0.06, 0.06, 0.07), 0x3a332a, 0, -0.55, 0.01)])!;
+      return quadruped(parts, leg, [[0.13, 0.58, 0.3], [-0.13, 0.58, 0.3], [0.13, 0.58, -0.3], [-0.13, 0.58, -0.3]], 0.7);
+    }
+    case 'rabbit': {
+      // Cartoon-sized (≈ 70 cm) so it's visible: long ears, white puff tail; it hops.
+      const fur = 0x9a7d62;
+      const root = new THREE.Group();
+      const body = mesh([
+        part(ball(0.2, 10, 7), fur, 0, 0.26, 0, 1, 1, 1.35),
+        part(ball(0.14, 8, 6), fur, 0, 0.44, 0.24),
+        part(ball(0.06, 6, 4), 0xf3eee6, 0, 0.3, -0.27), // tail puff
+        part(box(0.06, 0.32, 0.03), fur, 0.06, 0.66, 0.2, 1, 1, 1, -0.2),
+        part(box(0.06, 0.32, 0.03), fur, -0.06, 0.66, 0.2, 1, 1, 1, -0.2),
+        part(box(0.035, 0.26, 0.035), 0xe0a3a8, 0.06, 0.66, 0.218, 1, 1, 1, -0.2),
+        part(box(0.035, 0.26, 0.035), 0xe0a3a8, -0.06, 0.66, 0.218, 1, 1, 1, -0.2),
+        part(ball(0.025, 6, 4), 0x111111, 0.08, 0.47, 0.34),
+        part(ball(0.025, 6, 4), 0x111111, -0.08, 0.47, 0.34),
+        part(ball(0.022, 6, 4), 0xd77d8a, 0, 0.42, 0.37),
+        part(box(0.07, 0.06, 0.24), fur, 0.11, 0.05, -0.05), // hind feet
+        part(box(0.07, 0.06, 0.24), fur, -0.11, 0.05, -0.05),
+        part(box(0.05, 0.14, 0.05), fur, 0.07, 0.08, 0.16), // front paws
+        part(box(0.05, 0.14, 0.05), fur, -0.07, 0.08, 0.16),
+      ]);
+      root.add(body);
+      root.scale.setScalar(1.6);
+      return {
+        root,
+        animate(phase, run) {
+          const hop = Math.max(0, Math.sin(phase * Math.PI * 2));
+          body.position.y = hop * 0.18 * Math.min(1, run * 1.5);
+          body.rotation.x = -Math.cos(phase * Math.PI * 2) * 0.18 * Math.min(1, run);
+        },
+        dispose() {
+          body.geometry.dispose();
+        },
+      };
+    }
+    case 'camel': {
+      // Tan, two humps, long curved neck held forward, knobbly long legs.
+      const fur = 0xc89f64;
+      const parts = [
+        part(ball(0.55, 10, 7), fur, 0, 1.85, 0, 0.8, 0.6, 1.4),
+        part(ball(0.33, 8, 6), fur, 0, 2.25, 0.32, 1, 1.1, 1),
+        part(ball(0.33, 8, 6), fur, 0, 2.25, -0.38, 1, 1.1, 1),
+        part(cyl(0.13, 0.17, 0.8), fur, 0, 1.95, 0.9, 1, 1, 1, 1.1), // neck going forward/down
+        part(cyl(0.11, 0.13, 0.55), fur, 0, 2.3, 1.25, 1, 1, 1, -0.35), // neck curving up
+        part(box(0.24, 0.24, 0.5), fur, 0, 2.55, 1.45), // head
+        part(box(0.2, 0.16, 0.16), 0xa98250, 0, 2.48, 1.72), // muzzle
+        part(ball(0.035, 6, 4), 0x111111, 0.12, 2.62, 1.45),
+        part(ball(0.035, 6, 4), 0x111111, -0.12, 2.62, 1.45),
+        part(box(0.06, 0.1, 0.06), fur, 0.11, 2.72, 1.3),
+        part(box(0.06, 0.1, 0.06), fur, -0.11, 2.72, 1.3),
+        part(cyl(0.02, 0.02, 0.5, 4), 0x7a5c33, 0, 1.75, -0.85, 1, 1, 1, 0.3),
+      ];
+      const leg = (): THREE.BufferGeometry =>
+        mergeGeometries([part(cyl(0.07, 0.05, 1.45), fur, 0, -0.72, 0), part(ball(0.08, 6, 4), fur, 0, -0.75, 0), part(box(0.14, 0.06, 0.16), 0x8a6a40, 0, -1.44, 0.02)])!;
+      return quadruped(parts, leg, [[0.24, 1.5, 0.5], [-0.24, 1.5, 0.5], [0.24, 1.5, -0.5], [-0.24, 1.5, -0.5]], 0.5);
     }
     case 'croc':
     default: {

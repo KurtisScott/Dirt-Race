@@ -11,7 +11,7 @@ Every third-party asset or library that ships in `dist/` must be listed here.
 | Grass texture (test ground) | generated at runtime (`world/testGround.ts`) | original | canvas noise |
 | Course terrain textures (grass, dirt, gravel, mud, sand, rock, river bed, field), asphalt, water normals, checker, banner font | generated at runtime (`world/textures.ts`) | original | value noise + Worley noise into typed arrays; 5×7 pixel font drawn by hand |
 | Course props (trees, pines, bushes, rocks, grass tufts, houses, barn + silo, fences, ramps, log bridge, flag) | generated at runtime (`world/props.ts`, `world/raceCourse.ts`) | original | three.js primitives, vertex colours |
-| Animals (deer, bear, mouse, duck, crocodile) | generated at runtime (`world/animals.ts`) | original | three.js primitives |
+| Animals (deer, bear, mouse, duck, crocodile, moose, boar, bull, cow, goat, rabbit, camel) | generated at runtime (`world/animals.ts`) | original | three.js primitives |
 | Vehicle models, thumbnails, reflection env map | generated at runtime (`vehicles/models/`) | original | lofted procedural bodies; 64² gradient cube map |
 | Sky, particles, confetti, hay strands, skid marks, blob shadows | generated at runtime (`core/renderer.ts`, `fx/`) | original | shaders + typed arrays, no image files |
 | Title logo, How-to-play icons, results confetti | inline SVG/CSS (`ui/index.ts`, `style.css`) | original | system font (`ui-rounded`), emoji from the device's own font |
@@ -20,3 +20,5 @@ Every third-party asset or library that ships in `dist/` must be listed here.
 | `BufferGeometryUtils` (`mergeGeometries`, `mergeVertices`) | npm `three/examples/jsm` | MIT | part of three.js |
 
 No downloaded textures, models, fonts or sounds. `playwright-core`, `sharp`, `tsx`, `typescript`, `vite` and `vite-plugin-pwa` are dev-only tools and don't ship in `dist/`.
+
+Round 2 additions (all generated at runtime, original, no downloads): snow / forest-floor / red-sandstone terrain layers (`world/textures.ts`); snowy pines, cacti, fallen logs, gorge bridge, curved jump ramp, marker sign posts (`world/props.ts`); jump distance-marker sign atlas (canvas text or the built-in 5×7 pixel font, `world/textures.ts`); moose, wild boar, bull, cows, goats, rabbits, camel (`world/animals.ts`, three.js primitives).

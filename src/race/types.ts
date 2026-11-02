@@ -1,42 +1,45 @@
 import type { RacerId } from '../core/types';
 
-/** Race-level config. FINISH_AT is the single switch SPEC asks for (foot vs summit). */
+/** Race-level config. */
 export interface RaceConfig {
-  /** Race time limit, seconds (SPEC: 4 minutes). */
+  /** Race time limit, seconds (SPEC round 2: 8 minutes). */
   timeLimitS: number;
-  /** Seconds allowed on the bonus hill after the race is decided (SPEC: 45 s). */
+  /** Seconds each finisher has for its one end-jump attempt (SPEC: 45 s). */
   bonusTimeS: number;
-  /** Where the finish line is: 'hillFoot' (default) or 'summit'. */
-  finishAt: 'hillFoot' | 'summit';
   /** Wait before a manual reset takes effect (SPEC: 2 s). */
   resetDelayS: number;
   /** Length of the 3-2-1 countdown before GO, seconds. */
   countdownS: number;
   /** Pause between "everyone is done" and the results screen (finish celebration), seconds. */
   resultsDelayS: number;
-  /** Summit counts when within this horizontal distance (m) of world.summit, or past track.summitS. */
-  summitRadiusM: number;
+  /** A jump landing counts once the car has stayed upright on its wheels this long after touchdown (s). */
+  jumpLandS: number;
+  /** Passing the lip by this many metres without ever leaving the ground ends the attempt (drove round / crept off). */
+  jumpMissM: number;
   /**
-   * Once Brooks's race is over (summit, bonus window used up, or timer), the computer gets at most this
-   * many more seconds to finish / climb, so a kid isn't left watching a 45 s computer hill climb.
+   * Once Brooks's race is over (jump done, bonus window used up, or timer), the computer gets at most this
+   * many more seconds to finish / jump, so a kid isn't left waiting.
    */
   cpuGraceS: number;
 }
 
 export const DEFAULT_RACE_CONFIG: RaceConfig = {
-  timeLimitS: 240,
+  timeLimitS: 480,
   bonusTimeS: 45,
-  finishAt: 'hillFoot',
   resetDelayS: 2,
   countdownS: 3,
   resultsDelayS: 1.5,
-  summitRadiusM: 7,
+  jumpLandS: 1.0,
+  jumpMissM: 25,
   cpuGraceS: 12,
 };
 
+/** Where a racer is in its one end-jump attempt. */
+export type JumpPhase = 'none' | 'air' | 'landing' | 'done';
+
 /**
  * Where a racer is in its own race:
- * waiting (before GO) → racing → bonus (crossed the finish, 45 s on the hill) → done.
+ * waiting (before GO) → racing → bonus (crossed the finish, 45 s for the end jump) → done.
  * A racer still racing when the timer runs out goes straight to done.
  */
 export type RacerStage = 'waiting' | 'racing' | 'bonus' | 'done';
@@ -54,13 +57,17 @@ export interface RacerProgress {
   checkpoint: number;
   finished: boolean;
   finishTimeS: number | null;
-  summit: boolean;
+  /** End jump: attempt state, distance (m past the lip, null = no attempt yet), crash, bonus earned. */
+  jump: JumpPhase;
+  jumpM: number | null;
+  jumpCrashed: boolean;
+  jumpBonus: boolean;
   /** 1 or 2. */
   position: 1 | 2;
   stage: RacerStage;
-  /** Seconds left in this racer's bonus-hill window (0 when not in bonus). */
+  /** Seconds left in this racer's bonus-jump window (0 when not in bonus). */
   bonusLeftS: number;
-  /** Points earned this race so far (finish win + summit). */
+  /** Points earned this race so far (finish win + jump bonus). */
   points: number;
 }
 

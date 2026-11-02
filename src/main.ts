@@ -184,7 +184,7 @@ async function boot(): Promise<void> {
   race = new RaceController(w);
   const r = race;
   hud = new RaceHud(overlay, r);
-  hud.setTrack(w.track);
+  hud.setTrack({ length: w.track.length, finishS: w.track.finishS, jumpS: w.jump.lipS, bonusS: w.jump.bonusS });
   hud.setVisible(false);
 
   const f = (flow = new RaceFlow({

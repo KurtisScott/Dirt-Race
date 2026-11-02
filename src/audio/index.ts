@@ -591,7 +591,8 @@ export class AudioSystem implements System {
         this.play('tootCpu');
       }
     }));
-    on('race:summit', safe(({ racer }) => {
+    on('race:jump', safe(({ racer, bonus }) => {
+      if (!bonus) return;
       if (racer === 'player') this.play('fanfare');
       else this.play('chime', { gain: 0.5 });
     }));

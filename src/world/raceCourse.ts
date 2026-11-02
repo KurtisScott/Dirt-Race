@@ -7,22 +7,29 @@ import { Animals, type AnimalInfo } from './animals';
 import { CourseData } from './course';
 import { Obstacles } from './obstacles';
 import {
+  bigRampTemplate,
   bridgeTemplate,
   bushTemplate,
+  cactusTemplate,
   ChunkMerger,
   fenceTemplate,
+  gorgeBridgeTemplate,
   houseTemplate,
+  logTemplate,
   pineTemplate,
   rampTemplate,
   rockTemplate,
+  signPostsTemplate,
+  snowPineTemplate,
   treeTemplate,
   tuftTemplate,
   type Template,
 } from './props';
+import { GORGE_DEPTH_M } from './layout';
 import { loadJSON, saveJSON } from '../core/storage';
 import { createTerrainCollider, createTerrainMesh, type TerrainHandles, type TerrainShading } from './terrain';
-import { makeAsphaltTexture, makeBannerTexture, makeCheckerTexture, makeWaterNormal } from './textures';
-import type { Checkpoint, World, Zone } from './types';
+import { makeAsphaltTexture, makeBannerTexture, makeCheckerTexture, makeSignAtlas, makeWaterNormal, type SignCell } from './textures';
+import type { Checkpoint, JumpInfo, World, Zone } from './types';
 import type { TrackShortcut } from '../ai/types';
 
 const GPU_KEY = 'dirtrace.gpu.v1';
@@ -38,13 +45,14 @@ function terrainForcedSimple(): boolean {
 }
 
 /**
- * The real ~2.4 km point-to-point course (SPEC "Track"). Implements `World`.
+ * The real ~5 km point-to-point course (SPEC "Track" + round 2). Implements `World`.
  *
- * Zones: town → farm → mud → rocky → desert → river → finish straight → bonus hill.
- * Physics: one heightfield (terrain incl. road, mud pit, river channel, hill, valley walls),
- * fixed boulders/ramps/bridge/fence-posts, dynamic hay & cones, light dynamic animals.
- * Rendering: ~1 draw call per 80 m terrain chunk (texture-array splat), props merged per 120 m chunk,
- * instanced debris, a handful of unique meshes (water, banners, flag).
+ * Zones: town → farm → mud → rocky → forest → canyon (gorge bridge) → snowy pass → desert → river
+ * (riverside + ford / log bridge) → finish straight → end jump (run-up, ramp, landing hill, run-off).
+ * Physics: one heightfield (terrain incl. road, mud pit, river channel, gorge, landing hill, valley walls),
+ * fixed boulders/logs/ramps/bridges/fence-posts, dynamic hay & cones, light dynamic animals.
+ * Rendering: ~1 draw call per 80 m terrain chunk (texture-array splat), props merged per 120–160 m chunk,
+ * instanced debris, a handful of unique meshes (water, banners, jump markers, bonus flags).
  */
 export class RaceCourse implements World {
   readonly data: CourseData;
@@ -52,7 +60,7 @@ export class RaceCourse implements World {
   readonly zones: readonly Zone[];
   readonly checkpoints: readonly Checkpoint[];
   readonly spawns: { player: SpawnPoint; cpu: SpawnPoint };
-  readonly summit: THREE.Vector3;
+  readonly jump: JumpInfo;
   /** Optional (AIWorldExtras): the log-bridge shortcut the Hard computer takes. */
   readonly shortcuts: readonly TrackShortcut[];
   /** Optional: animals on the course (AI treats active ones as obstacles). */
@@ -64,7 +72,7 @@ export class RaceCourse implements World {
   private animalSys: Animals;
   water: THREE.Mesh | null = null;
   private waterNormal: THREE.Texture | null = null;
-  flag: THREE.Mesh | null = null;
+  flags: THREE.Mesh[] = [];
   private flagGeo: THREE.BufferGeometry | null = null;
   private flagBase: Float32Array | null = null;
   private time = 0;
@@ -82,7 +90,7 @@ export class RaceCourse implements World {
     this.zones = c.zones;
     this.checkpoints = c.checkpoints;
     this.spawns = c.spawns;
-    this.summit = c.summit.clone();
+    this.jump = c.jump;
     const sc = c.shortcut;
     this.shortcuts = [{ id: sc.id, startS: sc.startS, endS: sc.endS, points: sc.points, halfWidth: sc.halfWidth, maxSpeed: sc.maxSpeed }];
     this.group.name = 'raceCourse';
@@ -104,7 +112,7 @@ export class RaceCourse implements World {
     this.buildProps(q.detail);
     this.buildWater();
     this.buildStartFinish();
-    this.buildSummitFlag();
+    this.buildJump();
     this.applyQuality();
     const offs = [
       events.on('quality:changed', () => this.applyQuality()),
@@ -225,6 +233,58 @@ export class RaceCourse implements World {
     const { physics } = this.ctx;
     const c = this.data;
     const body = physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    // End-jump ramp: a curved face approximated by convex wedge slices (asphalt grip).
+    {
+      const j = c.jump;
+      const foot = c.spawnAt(j.footS, 0);
+      const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), foot.yaw);
+      const prof = rampProfile(j.rampLen, j.rampHeight, j.rampDeg);
+      const N = 8;
+      const hw = j.halfWidth;
+      for (let i = 0; i < N; i++) {
+        const z0 = (i / N) * j.rampLen;
+        const z1 = ((i + 1) / N) * j.rampLen;
+        const y0 = prof(z0);
+        const y1 = prof(z1);
+        const v = new Float32Array([-hw, -0.4, z0, hw, -0.4, z0, -hw, -0.4, z1, hw, -0.4, z1, -hw, y0, z0, hw, y0, z0, -hw, y1, z1, hw, y1, z1]);
+        const desc = RAPIER.ColliderDesc.convexHull(v);
+        if (!desc) continue;
+        const col = physics.world.createCollider(
+          desc.setTranslation(foot.x, foot.y - 0.01, foot.z).setRotation(q).setFriction(0.9).setCollisionGroups(groups(Group.GROUND, 0xffff)),
+          body,
+        );
+        physics.tag(col, { kind: 'ground', surface: 'asphalt' });
+      }
+    }
+    // Gorge bridge: a tilted deck cuboid plus side rails (rails redirect like fences).
+    {
+      const { mid, q, len } = this.gorgeFrame();
+      const g = c.gorge;
+      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+      const deck = physics.world.createCollider(
+        RAPIER.ColliderDesc.cuboid(g.halfWidth, 0.3, len / 2)
+          .setTranslation(mid.x - up.x * 0.3, mid.y - up.y * 0.3, mid.z - up.z * 0.3)
+          .setRotation(q)
+          .setFriction(0.9)
+          .setCollisionGroups(groups(Group.GROUND, 0xffff)),
+        body,
+      );
+      physics.tag(deck, { kind: 'ground', surface: 'dirt' });
+      for (const sx of [-1, 1]) {
+        const o = right.clone().multiplyScalar(sx * (g.halfWidth + 0.1)).addScaledVector(up, 0.55);
+        const rail = physics.world.createCollider(
+          RAPIER.ColliderDesc.cuboid(0.08, 0.55, len / 2)
+            .setTranslation(mid.x + o.x, mid.y + o.y, mid.z + o.z)
+            .setRotation(q)
+            .setFriction(0.1)
+            .setRestitution(0.2)
+            .setCollisionGroups(groups(Group.STATIC, Group.VEHICLE | Group.DEBRIS | Group.ANIMAL)),
+          body,
+        );
+        physics.tag(rail, { kind: 'static', name: 'fence' });
+      }
+    }
     // Jump ramps (convex wedges, gravel surface).
     for (const r of c.ramps) {
       const v = new Float32Array([-r.halfWidth, -0.3, 0, r.halfWidth, -0.3, 0, -r.halfWidth, -0.3, r.length, r.halfWidth, -0.3, r.length, -r.halfWidth, r.height, r.length, r.halfWidth, r.height, r.length, -r.halfWidth, 0, 0, r.halfWidth, 0, 0]);
@@ -338,12 +398,38 @@ export class RaceCourse implements World {
 
   // ------------------------------------------------------------------ visuals
 
-  /** Asphalt ribbon through the town (the only textured road mesh; other roads are terrain layers). */
+  /** Centre, orientation and length of the gorge bridge deck (top surface). */
+  private gorgeFrame(): { mid: THREE.Vector3; q: THREE.Quaternion; len: number } {
+    const c = this.data;
+    const g = c.gorge;
+    const a2 = c.centre(g.s0);
+    const b2 = c.centre(g.s1);
+    const a = new THREE.Vector3(a2.x, g.y0, a2.y);
+    const b = new THREE.Vector3(b2.x, g.y1, b2.y);
+    const dir = b.clone().sub(a);
+    const len = dir.length();
+    dir.normalize();
+    const yaw = Math.atan2(dir.x, dir.z);
+    const pitch = -Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1));
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+    return { mid: a.add(b).multiplyScalar(0.5), q, len };
+  }
+
+  /** Asphalt ribbons: through the town and along the end-jump run-up (other roads are terrain layers). */
   private buildRoad(): void {
     const c = this.data;
     const town = c.zone('town');
-    const s0 = 0;
-    const s1 = town.endS + 6;
+    const tex = makeAsphaltTexture(this.ctx.quality.preset.textureSize);
+    this.disposables.push(tex);
+    const mat = new THREE.MeshLambertMaterial({ map: tex, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+    this.disposables.push(mat);
+    this.roadRibbon(0, town.endS + 6, -1, town.endS - 4, mat, 'asphalt');
+    this.roadRibbon(c.finishS - 8, c.jump.footS + 0.5, c.finishS, Infinity, mat, 'asphalt-runup');
+  }
+
+  /** One asphalt ribbon from s0 to s1, narrowing in over 10 m after `fadeIn` and out after `fadeOut`. */
+  private roadRibbon(s0: number, s1: number, fadeIn: number, fadeOut: number, mat: THREE.Material, name: string): void {
+    const c = this.data;
     const pos: number[] = [];
     const uv: number[] = [];
     const idx: number[] = [];
@@ -355,7 +441,7 @@ export class RaceCourse implements World {
       c.track.pointAt(s, p);
       c.track.tangentAt(s, t);
       const hw = c.halfWidthAt(s) + 0.3;
-      const fade = s > town.endS - 4 ? 1 - (s - (town.endS - 4)) / 10 : 1;
+      const fade = Math.min(s > fadeOut ? 1 - (s - fadeOut) / 10 : 1, s < fadeIn ? 1 - (fadeIn - s) / 10 : 1);
       for (let k = 0; k <= across; k++) {
         const u = k / across;
         const lat = (u * 2 - 1) * hw * Math.max(0.2, fade);
@@ -375,14 +461,9 @@ export class RaceCourse implements World {
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     geo.setIndex(idx);
     geo.computeVertexNormals();
-    const tex = makeAsphaltTexture(this.ctx.quality.preset.textureSize);
-    this.disposables.push(tex);
-    const mat = new THREE.MeshLambertMaterial({ map: tex, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
-    this.disposables.push(mat);
-    // Split into ~120 m pieces for frustum culling.
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
-    mesh.name = 'asphalt';
+    mesh.name = name;
     this.group.add(mesh);
   }
 
@@ -403,12 +484,18 @@ export class RaceCourse implements World {
     const trees = variants(4, treeTemplate);
     const pines = variants(4, pineTemplate);
     const rocksT = variants(3, (v) => rockTemplate(v));
-    const boulderT = variants(3, (v) => rockTemplate(v, 0x9a8f80));
+    // Boulders: v 0..2 grey (rocky hills, pass), 3..5 red sandstone (canyon).
+    const boulderT = variants(6, (v) => rockTemplate(v % 3, v < 3 ? 0x9a8f80 : 0xa8664a));
+    const snowPines = variants(4, snowPineTemplate);
+    const cacti = variants(3, cactusTemplate);
     const houses: Record<number, Template> = {};
     for (const t of c.trees) big.add(trees[t.v % 4], t.x, t.y - 0.1, t.z, t.yaw, t.scale);
     for (const t of c.pines) big.add(pines[t.v % 4], t.x, t.y - 0.1, t.z, t.yaw, t.scale * 1.15);
     for (const h of c.houses) big.add((houses[h.v] ??= houseTemplate(h.v)), h.x, h.y - 0.2, h.z, h.yaw, h.v >= 10 ? 1 : h.scale);
-    for (const b of c.boulders) big.add(boulderT[b.v % 3], b.x, b.y - 0.25 * b.scale, b.z, b.yaw, b.scale * 1.1);
+    for (const t of c.snowPines) big.add(snowPines[t.v % 4], t.x, t.y - 0.1, t.z, t.yaw, t.scale * 1.15);
+    for (const t of c.cacti) big.add(cacti[t.v % 3], t.x, t.y - 0.1, t.z, t.yaw, t.scale);
+    for (const b of c.boulders) big.add(boulderT[b.v % 6], b.x, b.y - 0.25 * b.scale, b.z, b.yaw, b.scale * 1.1);
+    for (const l of c.logs) big.add(logTemplate(l.radius, l.length), l.x, l.y - 0.05, l.z, l.yaw, 1);
     const fence = fenceTemplate();
     const fm = new THREE.Matrix4();
     for (const f of c.fences) {
@@ -420,9 +507,19 @@ export class RaceCourse implements World {
       fm.set(dx, 0, -dz / len, f.a.x, dy, 1, 0, f.ya, dz, 0, dx / len, f.a.y, 0, 0, 0, 1);
       big.add(fence, f.a.x, f.ya, f.a.y, 0, 1, 1, fm);
     }
-    for (const r of c.ramps) big.add(rampTemplate(r.halfWidth, r.length, r.height), r.x, r.y - 0.02, r.z, r.yaw, 1);
+    for (const r of c.ramps) big.add(rampTemplate(r.halfWidth, r.length, r.height, r.style), r.x, r.y - 0.02, r.z, r.yaw, 1);
     const b = c.bridge;
     big.add(bridgeTemplate(b.length, b.halfWidth, 0, 3), b.x, b.y, b.z, b.yaw, 1);
+    {
+      const { mid, q, len } = this.gorgeFrame();
+      const m = new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1));
+      big.add(gorgeBridgeTemplate(len, c.gorge.halfWidth, GORGE_DEPTH_M + 2), mid.x, mid.y, mid.z, 0, 1, 1, m);
+    }
+    {
+      const j = c.jump;
+      const foot = c.spawnAt(j.footS, 0);
+      big.add(bigRampTemplate(j.halfWidth, j.rampLen, j.rampHeight, j.rampDeg), foot.x, foot.y - 0.01, foot.z, foot.yaw, 1);
+    }
     // Bridge ends ramp down to the ground: approximate by drawing it at deck height (ramps are short).
     add(big.build(mat, true), 'big');
 
@@ -434,7 +531,8 @@ export class RaceCourse implements World {
     const bushT = variants(4, (v) => bushTemplate(v, false));
     const dryT = variants(4, (v) => bushTemplate(v, true));
     for (const r of c.bushes) {
-      const desert = c.zoneAt(c.fieldsAt(r.x, r.z).s).id === 'desert';
+      const zid = c.zoneAt(c.fieldsAt(r.x, r.z).s).id;
+      const desert = zid === 'desert' || zid === 'canyon';
       bushes.add((desert ? dryT : bushT)[r.v % 4], r.x, r.y - 0.1, r.z, r.yaw, r.scale);
     }
     add(bushes.build(mat, false), 'bushes');
@@ -451,13 +549,45 @@ export class RaceCourse implements World {
     add(tufts.build(tuftMat, false), 'tufts');
   }
 
+  /** River water: one ribbon along the river polyline at the water level (one draw call). */
   private buildWater(): void {
     const c = this.data;
     const r = c.river;
-    const len = r.bMax - r.bMin + 24;
-    const geo = new THREE.PlaneGeometry(22, len, 1, 1).rotateX(-Math.PI / 2);
+    const pts = r.points;
+    const W = 9; // half-width: wider than the wet channel, the banks hide the rest
+    const pos: number[] = [];
+    const uv: number[] = [];
+    const idx: number[] = [];
+    // Extend 10 m past both ends along the end directions (the channel tapers there).
+    const ext = (i: number, j: number, d: number): THREE.Vector2 => pts[i].clone().add(pts[i].clone().sub(pts[j]).normalize().multiplyScalar(d));
+    const line = [ext(0, 1, 10), ...pts, ext(pts.length - 1, pts.length - 2, 10)];
+    const bs = [r.bs[0] - 10, ...r.bs, r.bs[r.bs.length - 1] + 10];
+    for (let i = 0; i < line.length; i++) {
+      const a = line[Math.max(0, i - 1)];
+      const b = line[Math.min(line.length - 1, i + 1)];
+      const dx = b.x - a.x;
+      const dz = b.y - a.y;
+      const l = Math.hypot(dx, dz) || 1;
+      const nx = -dz / l;
+      const nz = dx / l;
+      for (const side of [-1, 1]) {
+        pos.push(line[i].x + nx * W * side, r.water, line[i].y + nz * W * side);
+        uv.push(((side + 1) * W) / 6, bs[i] / 6);
+      }
+      if (i > 0) {
+        const k = (i - 1) * 2;
+        idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); // counter-clockwise from above (front face up)
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    // Make sure every normal points up (whichever way the strip winds).
+    const nrm = geo.attributes.normal as THREE.BufferAttribute;
+    for (let i = 0; i < nrm.count; i++) nrm.setXYZ(i, 0, 1, 0);
     const normal = makeWaterNormal(this.ctx.quality.preset.textureSize);
-    normal.repeat.set(22 / 6, len / 6);
     this.waterNormal = normal;
     const mat = new THREE.MeshPhongMaterial({
       color: 0x3f7f9a,
@@ -471,10 +601,6 @@ export class RaceCourse implements World {
     });
     this.disposables.push(mat, normal);
     const mesh = new THREE.Mesh(geo, mat);
-    // Plane local X = across the river, local Z = along.
-    const mid = (r.bMin + r.bMax) / 2;
-    mesh.position.set(r.origin.x + r.along.x * mid, r.water, r.origin.y + r.along.y * mid);
-    mesh.rotation.y = Math.atan2(r.across.x, r.across.y) - Math.PI / 2;
     mesh.renderOrder = 1;
     mesh.receiveShadow = true;
     mesh.name = 'river';
@@ -539,39 +665,156 @@ export class RaceCourse implements World {
     };
     gantry(14, 'START', [255, 255, 255], [200, 40, 40]);
     gantry(c.finishS, 'FINISH', [20, 20, 20], [250, 210, 40]);
+    gantry(c.jump.footS - 30, 'BIG JUMP!', [255, 255, 255], [40, 110, 210]);
   }
 
-  private buildSummitFlag(): void {
+  /**
+   * End-jump dressing: painted distance lines every `markerStepM` across the landing zone, numbered boards
+   * on both sides (one atlas texture, one draw call), and the gold bonus line with two tall gold posts and
+   * waving flags (fog-free, so the bonus gate reads from the run-up).
+   */
+  private buildJump(): void {
     const c = this.data;
-    const s = this.summit;
-    const g = new THREE.Group();
-    g.position.copy(s);
-    // A tall golden pole (visible from far away) with a golden flag and a beacon ball on top.
-    const poleMat = new THREE.MeshLambertMaterial({ color: 0xf0d26a, emissive: 0x3a2a00 });
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.2, 14, 8), poleMat);
-    pole.position.y = 7;
-    pole.castShadow = true;
-    const ballMat = new THREE.MeshBasicMaterial({ color: 0xffe066, fog: false }); // beacon: never fogged, so the summit reads from the start
-    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.9, 12, 8), ballMat);
-    ball.position.y = 14.4;
-    const fg = new THREE.PlaneGeometry(4.4, 2.6, 12, 4).translate(2.2, 0, 0);
+    const j = c.jump;
+    const step = j.markerStepM;
+    const hwRoad = c.halfWidthAt(j.lipS + 20);
+    // ---- ground lines (vertex coloured, draped on the terrain)
+    const pos: number[] = [];
+    const col: number[] = [];
+    const idx: number[] = [];
+    const white = new THREE.Color(0xf6f6f0);
+    const gold = new THREE.Color(0xffc51a);
+    const stripe = (s: number, width: number, color: THREE.Color, half: number): void => {
+      const t = c.dirAt(s);
+      const ctr = c.centre(s);
+      const n = 16;
+      const base = pos.length / 3;
+      for (let k = 0; k <= n; k++) {
+        const lat = -half + (2 * half * k) / n;
+        for (const dz of [-width / 2, width / 2]) {
+          const x = ctr.x + t.x * dz - t.y * lat;
+          const z = ctr.y + t.y * dz + t.x * lat;
+          pos.push(x, c.heightAt(x, z) + 0.06, z);
+          col.push(color.r, color.g, color.b);
+        }
+        if (k > 0) {
+          const a = base + (k - 1) * 2;
+          idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); // counter-clockwise from above
+        }
+      }
+    };
+    const maxD = j.runoffS - j.lipS;
+    for (let d = step; d < maxD - 2; d += step) if (Math.abs(d - j.bonusM) > 0.5) stripe(j.lipS + d, 0.35, white, hwRoad + 2);
+    stripe(j.bonusS, 1.0, gold, hwRoad + 4);
+    const lg = new THREE.BufferGeometry();
+    lg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    lg.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    lg.setIndex(idx);
+    lg.computeVertexNormals();
+    const lineMat = new THREE.MeshLambertMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+    this.disposables.push(lineMat);
+    const lines = new THREE.Mesh(lg, lineMat);
+    lines.name = 'jump-lines';
+    lines.receiveShadow = true;
+    this.group.add(lines);
+
+    // ---- numbered boards (atlas): "10" … plus the gold bonus number
+    const marks: number[] = [];
+    for (let d = step; d < maxD - 2; d += step) marks.push(d);
+    if (!marks.includes(j.bonusM)) marks.push(j.bonusM);
+    marks.sort((a, b) => a - b);
+    const cells: SignCell[] = marks.map((d) =>
+      d === j.bonusM ? { text: String(d), fg: [30, 20, 0], bg: [255, 205, 40], border: [200, 40, 30] } : { text: String(d), fg: [25, 25, 25], bg: [250, 250, 245], border: [40, 110, 210] },
+    );
+    const atlas = makeSignAtlas(cells, 4);
+    this.disposables.push(atlas.texture);
+    const S = 1.7; // board size (m)
+    const Y0 = 0.7;
+    const spos: number[] = [];
+    const suv: number[] = [];
+    const sidx: number[] = [];
+    const posts = signPostsTemplate(S, Y0);
+    const merger = new ChunkMerger(400);
+    marks.forEach((d, i) => {
+      const s = j.lipS + d;
+      const t = c.dirAt(s);
+      const ctr = c.centre(s);
+      for (const side of [-1, 1]) {
+        const lat = side * (hwRoad + 4.5);
+        const x = ctr.x - t.y * lat;
+        const z = ctr.y + t.x * lat;
+        const y = c.heightAt(x, z);
+        // Face back up the hill (toward the ramp) and turn 25° in toward the landing zone.
+        const yaw = Math.atan2(-t.x, -t.y) - side * 0.45;
+        merger.add(posts, x, y, z, yaw, 1);
+        const fx = Math.cos(yaw);
+        const fz = -Math.sin(yaw);
+        const [u0, v0, u1, v1] = atlas.uv[i];
+        const base = spos.length / 3;
+        // Quad in the board plane (its normal is the board's +Z after the yaw).
+        for (const [ax, ay, uu, vv] of [[-S / 2, Y0, u0, v0], [S / 2, Y0, u1, v0], [S / 2, Y0 + S, u1, v1], [-S / 2, Y0 + S, u0, v1]] as const) {
+          spos.push(x + fx * ax, y + ay, z + fz * ax);
+          suv.push(uu, vv);
+        }
+        sidx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      }
+    });
+    const sg = new THREE.BufferGeometry();
+    sg.setAttribute('position', new THREE.Float32BufferAttribute(spos, 3));
+    sg.setAttribute('uv', new THREE.Float32BufferAttribute(suv, 2));
+    sg.setIndex(sidx);
+    sg.computeVertexNormals();
+    const signMat = new THREE.MeshLambertMaterial({ map: atlas.texture, side: THREE.DoubleSide });
+    this.disposables.push(signMat);
+    const signs = new THREE.Mesh(sg, signMat);
+    signs.name = 'jump-signs';
+    this.group.add(signs);
+    const postMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+    this.disposables.push(postMat);
+    for (const m of merger.build(postMat, true)) this.group.add(m);
+
+    // ---- bonus gate: two tall gold posts with waving gold flags and a "+1 BONUS" board between them
+    const poleMat = new THREE.MeshLambertMaterial({ color: 0xf0d26a, emissive: 0x3a2a00, fog: false });
+    const ballMat = new THREE.MeshBasicMaterial({ color: 0xffe066, fog: false });
+    const fg = new THREE.PlaneGeometry(3.2, 1.9, 10, 3).translate(1.6, 0, 0);
     this.flagGeo = fg;
     this.flagBase = new Float32Array(fg.attributes.position.array);
     const flagMat = new THREE.MeshLambertMaterial({ color: 0xffc51a, emissive: 0x6a4200, side: THREE.DoubleSide, fog: false });
-    const flag = new THREE.Mesh(fg, flagMat);
-    flag.position.set(0.15, 12.4, 0);
-    flag.castShadow = true;
-    this.flag = flag;
-    // A small "+1" sign at the base.
-    const signTex = makeBannerTexture('+1 BONUS', [255, 255, 255], [40, 120, 200], false, 5, 3.6 / 0.9);
-    const signMat = new THREE.MeshLambertMaterial({ map: signTex, side: THREE.DoubleSide });
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 0.9), signMat);
-    sign.position.set(0, 2.2, 0.3);
-    const yaw = c.spawnAt(c.summitS, 0).yaw + Math.PI;
-    g.rotation.y = yaw;
-    g.add(pole, ball, flag, sign);
-    this.group.add(g);
-    this.disposables.push(poleMat, ballMat, flagMat, signTex, signMat);
+    const poleGeo = new THREE.CylinderGeometry(0.16, 0.22, 10, 8);
+    const ballGeo = new THREE.SphereGeometry(0.6, 12, 8);
+    const t = c.dirAt(j.bonusS);
+    const ctr = c.centre(j.bonusS);
+    const yaw = Math.atan2(t.x, t.y);
+    for (const side of [-1, 1]) {
+      const lat = side * (hwRoad + 4.2);
+      const x = ctr.x - t.y * lat;
+      const z = ctr.y + t.x * lat;
+      const y = c.heightAt(x, z);
+      const g = new THREE.Group();
+      g.position.set(x, y, z);
+      g.rotation.y = yaw + Math.PI;
+      const pole = new THREE.Mesh(poleGeo, poleMat);
+      pole.position.y = 5;
+      pole.castShadow = true;
+      const ball = new THREE.Mesh(ballGeo, ballMat);
+      ball.position.y = 10.3;
+      const flag = new THREE.Mesh(fg, flagMat);
+      flag.position.set(0.15 * side, 8.9, 0);
+      flag.rotation.y = side > 0 ? Math.PI : 0;
+      flag.castShadow = true;
+      this.flags.push(flag);
+      g.add(pole, ball, flag);
+      this.group.add(g);
+    }
+    const bw = (hwRoad + 4.2) * 2;
+    const signTex = makeBannerTexture('+1 BONUS', [60, 30, 0], [255, 205, 40], false, 6, bw / 1.6);
+    const bannerMat = new THREE.MeshLambertMaterial({ map: signTex, side: THREE.DoubleSide, fog: false });
+    const banner = new THREE.Mesh(new THREE.PlaneGeometry(bw, 1.6), bannerMat);
+    banner.position.set(ctr.x, c.heightAt(ctr.x, ctr.y) + 7.2, ctr.y);
+    banner.rotation.y = yaw + Math.PI;
+    banner.castShadow = true;
+    this.group.add(banner);
+    this.disposables.push(poleMat, ballMat, flagMat, signTex, bannerMat, poleGeo, ballGeo);
   }
 
   private waveFlag(): void {
@@ -581,8 +824,17 @@ export class RaceCourse implements World {
     const t = this.time;
     for (let i = 0; i < pos.count; i++) {
       const x = b[i * 3];
-      pos.setZ(i, Math.sin(x * 1.6 - t * 5) * 0.18 * (x / 4.4));
+      pos.setZ(i, Math.sin(x * 1.6 - t * 5) * 0.18 * (x / 3.2));
     }
     pos.needsUpdate = true;
   }
+}
+
+/** Height of the end-jump ramp face at z m from its foot: a circular arc reaching `deg` at the lip, scaled to `h`. */
+export function rampProfile(len: number, h: number, deg: number): (z: number) => number {
+  const th = (deg * Math.PI) / 180;
+  const R = len / Math.sin(th);
+  const yAt = (z: number): number => R - Math.sqrt(Math.max(0, R * R - z * z));
+  const k = h / Math.max(1e-6, yAt(len));
+  return (z) => yAt(THREE.MathUtils.clamp(z, 0, len)) * k;
 }
