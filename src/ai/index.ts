@@ -106,6 +106,7 @@ export class AIDriver implements System {
   // obstacle avoidance: remembered ray hits in track space
   private obstacles: { s: number; lat: number; ttl: number }[] = [];
   private avoidLat: number | null = null;
+  private senseLow = false;
   // mistakes
   private nextMistakeT = 0;
   private mistakeT = 0;
@@ -398,7 +399,10 @@ export class AIDriver implements System {
     if (absSpeed < 2) return;
     const half = v.spec.size.length / 2 + 0.3;
     const ox = v.position.x + v.forward.x * half;
-    const oy = v.position.y + 0.1;
+    // Alternate between chassis height and ~0.5 m lower, so low boulders/logs are seen by tall cars (buggy,
+    // quad, lifted trucks) whose chassis-height rays pass over them. Ground is filtered out, so low rays are safe.
+    this.senseLow = !this.senseLow;
+    const oy = v.position.y + (this.senseLow ? -0.5 : 0.1);
     const oz = v.position.z + v.forward.z * half;
     const range = Math.min(45, 10 + absSpeed * 1.3);
     const yaw = Math.atan2(v.forward.x, v.forward.z);

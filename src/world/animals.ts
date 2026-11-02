@@ -86,6 +86,8 @@ class Animal implements AnimalInfo {
   delay = 0;
   phase = Math.random() * 6;
   freeT = 0;
+  /** Seconds spent right under/against a car (pinned): after a moment it hops clear. */
+  pinnedT = 0;
   stateT = 0;
   spotS = 0;
   heading = 0;
@@ -136,7 +138,8 @@ export class Animals {
   private plan: { spot: AnimalSpot; side: number; done: boolean; animals: Animal[] }[] = [];
   private rand = rng(Date.now() & 0xffff);
   private time = 0;
-  private racers: { racer: RacerId; body: RAPIER.RigidBody; s: number }[] = [];
+  /** `reach`: horizontal half-diagonal of the car's chassis collider (a bus reaches ~6 m from its centre). */
+  private racers: { racer: RacerId; body: RAPIER.RigidBody; s: number; reach: number }[] = [];
   private scanT = 0;
   private offCollision: () => void;
   /** Turn crossings off (e.g. free drive / tests). Defaults on. */
@@ -238,7 +241,14 @@ export class Animals {
       if (t?.kind !== 'vehicle') return;
       const body = col.parent();
       if (!body || this.racers.some((r) => r.body.handle === body.handle)) return;
-      this.racers.push({ racer: t.racer as RacerId, body, s: 0 });
+      let reach = 2.5;
+      try {
+        const he = col.halfExtents();
+        if (he) reach = Math.hypot(he.x, he.z) + (col.roundRadius?.() ?? 0);
+      } catch {
+        // not a cuboid: keep the default
+      }
+      this.racers.push({ racer: t.racer as RacerId, body, s: 0, reach });
     });
   }
 
@@ -340,9 +350,32 @@ export class Animals {
     }
     // A car right on top of it: let physics push it around rather than steering it into the car (a
     // velocity-driven body would act like a wall and stop the car).
+    let pinnedBy: RAPIER.RigidBody | null = null;
     for (const r of this.racers) {
       const p = r.body.translation();
-      if ((p.x - t.x) ** 2 + (p.z - t.z) ** 2 < (a.radius + 3) ** 2) a.freeT = Math.max(a.freeT, 0.25);
+      // (measured from the car's centre, so long vehicles — bus, van — use their own reach)
+      const d2 = (p.x - t.x) ** 2 + (p.z - t.z) ** 2;
+      if (d2 < (a.radius + r.reach + 1) ** 2) a.freeT = Math.max(a.freeT, 0.25);
+      if (d2 < (a.radius + r.reach * 0.8) ** 2) pinnedBy = r.body;
+    }
+    // Pinned under or against a car for over a second (a van can ride up onto a bear): it scrambles out
+    // sideways, so it never carries the car along or stops it — and is never hurt.
+    a.pinnedT = pinnedBy ? a.pinnedT + dt : 0;
+    if (pinnedBy && a.pinnedT > 1.2) {
+      const p = pinnedBy.translation();
+      const lv = pinnedBy.linvel();
+      const sp = Math.hypot(lv.x, lv.z);
+      // Out to the side of the car's travel, on the side the animal is already on.
+      const fx = sp > 0.5 ? lv.x / sp : Math.sin(a.heading);
+      const fz = sp > 0.5 ? lv.z / sp : Math.cos(a.heading);
+      const side = Math.sign(-fz * (t.x - p.x) + fx * (t.z - p.z)) || 1;
+      const nx = p.x - fz * side * 6;
+      const nz = p.z + fx * side * 6;
+      a.body.setTranslation({ x: nx, y: this.c.heightAt(nx, nz) + a.lift + 0.05, z: nz }, true);
+      a.body.setLinvel({ x: -fz * side * 3, y: 0, z: fx * side * 3 }, true);
+      a.pinnedT = 0;
+      a.freeT = 0;
+      a.heading = Math.atan2(-fz * side, fx * side);
     }
     if (a.freeT > 0) a.freeT -= dt;
     else {
