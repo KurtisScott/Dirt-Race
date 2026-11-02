@@ -116,9 +116,30 @@ export type SfxName =
   | 'click' | 'beep' | 'beepHi' | 'goHorn' | 'cheer' | 'fanfare' | 'reelTick' | 'reelLand'
   | 'landSoft' | 'landHard' | 'crash' | 'hay' | 'cone' | 'carBump' | 'splash' | 'squelch' | 'crunch'
   | 'boing' | 'quack' | 'squeak' | 'bleat' | 'grunt' | 'chomp'
+  | 'moo' | 'bellow' | 'mooseCall' | 'oink' | 'goatBleat' | 'hop' | 'camelGroan'
   | 'whoosh' | 'chime' | 'buzzer' | 'jingleWin' | 'jingleTry' | 'leadUp' | 'leadDown' | 'pop' | 'cough' | 'tootCpu';
 
 type Gen = (sr: number) => Float32Array;
+
+/**
+ * A cartoon animal voice: a band-limited sawtooth glottal source at f0(t) through a few formant band-passes
+ * ([Hz, Q, gain]), shaped by env(t). Enough for moo / bellow / bleat-like calls.
+ */
+function voiced(sr: number, dur: number, f0: (t: number) => number, env: (t: number) => number, formants: [number, number, number][], harmonics = 16): Float32Array {
+  let ph = 0;
+  const src = make(sr, dur, (t) => {
+    ph += (TAU * f0(t)) / sr;
+    let s = 0;
+    for (let k = 1; k <= harmonics; k++) s += Math.sin(ph * k) / k;
+    return s * env(t);
+  });
+  const out = new Float32Array(src.length);
+  for (const [hz, q, g] of formants) {
+    const f = bandpass(src.slice(), sr, hz, q);
+    for (let i = 0; i < out.length; i++) out[i] += f[i] * g;
+  }
+  return out;
+}
 
 export const SFX: Record<SfxName, Gen> = {
   click: (sr) => glide(sr, 0.05, (t) => 1500 - 14000 * t, (t) => Math.exp(-t / 0.012) * att(t, 0.0008) * 0.7),
@@ -319,6 +340,62 @@ export const SFX: Record<SfxName, Gen> = {
     bandpass(saw, sr, 420, 1.5);
     return normalize(seq(sr, 0.5, [[saw, 0, 1], [noiseBurst(sr, 0.3, seeded(41), 0.08, 900), 0, 0.3]]), 0.85);
   },
+  // ---- Round 2 animals (simple synth voices; friendly, never scary)
+  /** Cow: a long "mooo" sliding up then down, the mouth opening (formant rises) as it goes. */
+  moo: (sr) => {
+    const d = 1.1;
+    const a = voiced(sr, d, (t) => 125 + 30 * Math.sin((Math.PI * t) / d) - 15 * (t / d), (t) => att(t, 0.08) * clamp((d - t) / 0.25, 0, 1), [[380, 2.5, 1], [800, 4, 0.5]]);
+    const b = voiced(sr, d, (t) => 125 + 30 * Math.sin((Math.PI * t) / d), (t) => att(t, 0.08) * clamp((d - t) / 0.25, 0, 1) * clamp((t - 0.25) / 0.4, 0, 1), [[700, 3, 0.8], [1150, 5, 0.35]]);
+    for (let i = 0; i < a.length; i++) a[i] += b[i];
+    return normalize(a, 0.8);
+  },
+  /** Bull: a deeper, rougher bellow plus a snort. */
+  bellow: (sr) => {
+    const d = 0.9;
+    const r = seeded(71);
+    const v = voiced(sr, d, (t) => 82 + 22 * Math.sin((Math.PI * t) / d) + 6 * Math.sin(TAU * 23 * t), (t) => att(t, 0.04) * clamp((d - t) / 0.2, 0, 1), [[300, 2, 1], [620, 3, 0.6], [1500, 4, 0.15]], 20);
+    const snort = noiseBurst(sr, 0.25, r, 0.07, 1400);
+    return normalize(seq(sr, 1.2, [[snort, 0, 0.6], [v, 0.18, 1], [noiseBurst(sr, 0.2, r, 0.05, 1200), 1.0, 0.45]]), 0.85);
+  },
+  /** Moose: a low, nasal, wobbling groan ("mwaaa-uh") that drops at the end. */
+  mooseCall: (sr) => {
+    const d = 1.0;
+    const v = voiced(sr, d, (t) => (t < 0.7 ? 150 + 20 * Math.sin(TAU * 3 * t) : 150 - 160 * (t - 0.7)), (t) => att(t, 0.05) * clamp((d - t) / 0.2, 0, 1), [[520, 3, 1], [1250, 6, 0.55], [2400, 8, 0.15]]);
+    return normalize(v, 0.8);
+  },
+  /** Wild boar: three quick snorty grunts and a little squeal. */
+  oink: (sr) => {
+    const r = seeded(73);
+    const g = (f: number): Float32Array => {
+      const v = voiced(sr, 0.14, (t) => f - 120 * t, (t) => att(t, 0.006) * Math.exp(-t / 0.05), [[650, 2.5, 1], [1600, 4, 0.35]]);
+      const n = noiseBurst(sr, 0.14, r, 0.04, 2200);
+      for (let i = 0; i < v.length; i++) v[i] += n[i] * 0.5;
+      return v;
+    };
+    const squeal = voiced(sr, 0.25, (t) => 650 + 500 * Math.sin((Math.PI * t) / 0.25), (t) => Math.sin((Math.PI * t) / 0.25), [[1500, 3, 1], [3000, 5, 0.3]], 8);
+    return normalize(seq(sr, 0.75, [[g(170), 0, 1], [g(150), 0.15, 0.9], [g(185), 0.28, 0.9], [squeal, 0.46, 0.55]]), 0.8);
+  },
+  /** Goat: a bright, nasal, fast-wobbling "meh-eh-eh-eh". */
+  goatBleat: (sr) => {
+    const d = 0.7;
+    const v = voiced(sr, d, (t) => 360 * (1 + 0.07 * Math.sin(TAU * 11 * t)) - 40 * t, (t) => att(t, 0.02) * clamp((d - t) / 0.12, 0, 1) * (0.55 + 0.45 * Math.sin(TAU * 11 * t)), [[750, 3, 1], [2100, 4, 0.7], [3300, 6, 0.25]], 12);
+    return normalize(v, 0.75);
+  },
+  /** Rabbit: silent animals, so two soft hop-thumps and a tiny squeak. */
+  hop: (sr) => {
+    const thump = (): Float32Array => glide(sr, 0.12, (t) => 140 - 500 * t, (t) => att(t, 0.002) * Math.exp(-t / 0.035));
+    const squeak = glide(sr, 0.08, (t) => 3200 + 900 * Math.sin((Math.PI * t) / 0.08), (t) => Math.sin((Math.PI * t) / 0.08) * 0.35);
+    return normalize(seq(sr, 0.45, [[thump(), 0, 1], [thump(), 0.16, 0.8], [squeak, 0.3, 1]]), 0.7);
+  },
+  /** Camel: a gurgling, grumbling groan (low voice with a bubbly amplitude flutter). */
+  camelGroan: (sr) => {
+    const d = 1.1;
+    const r = seeded(79);
+    const v = voiced(sr, d, (t) => 95 + 35 * Math.sin((Math.PI * t) / d) + 8 * Math.sin(TAU * 4 * t), (t) => att(t, 0.06) * clamp((d - t) / 0.2, 0, 1) * (0.6 + 0.4 * Math.abs(Math.sin(TAU * 17 * t + 2 * Math.sin(TAU * 3 * t)))), [[420, 2, 1], [950, 4, 0.45]], 18);
+    const gurgle = noiseBurst(sr, d, r, 0.6, 500);
+    for (let i = 0; i < v.length; i++) v[i] += gurgle[i] * 0.35 * Math.abs(Math.sin((TAU * 9 * i) / sr));
+    return normalize(v, 0.8);
+  },
   chomp: (sr) => {
     const clack = (): Float32Array => partials(sr, 0.08, [700, 1650, 2900], [1, 0.6, 0.3], [0.02, 0.012, 0.008]);
     let ph = 0;
@@ -382,6 +459,13 @@ export function animalVoice(kind: string): SfxName {
   if (k.includes('deer')) return 'bleat';
   if (k.includes('bear')) return 'grunt';
   if (k.includes('croc') || k.includes('gator')) return 'chomp';
+  if (k.includes('moose')) return 'mooseCall';
+  if (k.includes('bull')) return 'bellow';
+  if (k.includes('cow')) return 'moo';
+  if (k.includes('boar') || k.includes('pig')) return 'oink';
+  if (k.includes('goat')) return 'goatBleat';
+  if (k.includes('rabbit') || k.includes('bunny')) return 'hop';
+  if (k.includes('camel')) return 'camelGroan';
   return 'boing';
 }
 
@@ -464,6 +548,22 @@ export const LOOPS: Record<LoopName, (sr: number) => Float32Array> = {
     highpass(grains, sr, 2500);
     for (let i = 0; i < len; i++) hiss[i] += grains[i];
     return normalizeRms(removeDC(hiss), 0.17);
+  },
+  // Packed snow: a dull low "whump" bed plus dense, squeaky compressed-snow crunches (longer, lower and
+  // more tonal than gravel's ticks).
+  snow: (sr) => {
+    const r = seeded(131);
+    const len = Math.floor(sr * LOOP_S);
+    const n = len + Math.floor(sr * FADE_S);
+    const bed = loopify(lowpass(brown(n, r), sr, 260), len);
+    const squeak = new Float32Array(len);
+    sprinkle(squeak, sr, r, 150, 0.012, (t, k) => Math.sin(TAU * (700 + 900 * k) * t) * Math.exp(-t / 0.005) * (0.4 + k));
+    bandpass(squeak, sr, 1400, 0.7);
+    const grit = new Float32Array(len);
+    sprinkle(grit, sr, r, 220, 0.006, (t) => (r() * 2 - 1) * Math.exp(-t / 0.0025));
+    bandpass(grit, sr, 2200, 0.8);
+    for (let i = 0; i < len; i++) bed[i] = bed[i] * 0.7 + squeak[i] * 2.5 + grit[i] * 1.5;
+    return normalizeRms(removeDC(bed), 0.19);
   },
   water: (sr) => {
     const r = seeded(127);

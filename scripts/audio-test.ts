@@ -4,7 +4,8 @@
  * Run: npx tsx scripts/audio-test.ts
  */
 import { ENGINE_PROFILES, renderEngineLoop } from '../src/audio/engine.ts';
-import { LOOPS, SFX } from '../src/audio/sfx.ts';
+import { LOOPS, SFX, animalVoice } from '../src/audio/sfx.ts';
+import { ANIMAL_SPECS } from '../src/world/animals.ts';
 import { MENU_SONG, RACE_SONG, midi } from '../src/audio/music.ts';
 
 let failed = 0;
@@ -54,6 +55,14 @@ for (const [name, gen] of Object.entries(SFX)) {
   check(st.peak <= 1.0, `${name}: clips (peak ${st.peak})`);
   check(st.rms > 0.01, `${name}: too quiet (rms ${st.rms})`);
   check(b.length < SR * 4, `${name}: too long`);
+}
+
+// Every animal on the course has its own voice (not the generic boing), and no two kinds share one.
+{
+  const voices = Object.keys(ANIMAL_SPECS).map((k) => [k, animalVoice(k)] as const);
+  console.log(`animal voices: ${voices.map(([k, v]) => `${k}→${v}`).join(', ')}`);
+  check(voices.every(([, v]) => v !== 'boing' && v in SFX), 'every animal kind has its own voice');
+  check(new Set(voices.map(([, v]) => v)).size === voices.length, 'no two animal kinds share a voice');
 }
 
 console.log('loops (24 kHz)');

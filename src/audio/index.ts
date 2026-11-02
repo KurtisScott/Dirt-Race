@@ -52,7 +52,8 @@ const MUSIC_FOR_PHASE: Partial<Record<GamePhase, MusicTrack>> = {
 const TRIM: Partial<Record<SfxName, number>> = {
   click: 0.35, beep: 0.55, beepHi: 0.6, goHorn: 0.55, cheer: 0.6, fanfare: 0.6, reelTick: 0.28, reelLand: 0.55,
   landSoft: 0.7, landHard: 0.85, crash: 0.7, hay: 0.6, cone: 0.5, carBump: 0.6, splash: 0.55, squelch: 0.5, crunch: 0.4,
-  boing: 0.45, quack: 0.5, squeak: 0.45, bleat: 0.45, grunt: 0.55, chomp: 0.5, whoosh: 0.35, chime: 0.45, buzzer: 0.4,
+  boing: 0.45, quack: 0.5, squeak: 0.45, bleat: 0.45, grunt: 0.55, chomp: 0.5,
+  moo: 0.5, bellow: 0.55, mooseCall: 0.5, oink: 0.5, goatBleat: 0.45, hop: 0.45, camelGroan: 0.5, whoosh: 0.35, chime: 0.45, buzzer: 0.4,
   jingleWin: 0.5, jingleTry: 0.45, leadUp: 0.35, leadDown: 0.3, pop: 0.45, cough: 0.5, tootCpu: 0.35,
 };
 /** Minimum seconds between two plays of the same sound (anti-spam). */
@@ -626,6 +627,7 @@ export class AudioSystem implements System {
       if (surface === 'water') this.playFor(racer, 'splash', g);
       else if (surface === 'mud') this.playFor(racer, 'squelch', g);
       else if (surface === 'gravel') this.playFor(racer, 'crunch', g * 0.7);
+      else if (surface === 'snow') this.playFor(racer, 'crunch', g * 0.6, 0.7); // lower, softer crunch into snow
     }));
     on('vehicle:flipped', safe(({ racer }) => this.playFor(racer, 'boing', 0.6, 0.8)));
     on('vehicle:reset', safe(({ racer }) => {
@@ -637,9 +639,9 @@ export class AudioSystem implements System {
       this.lastObstacleHit[racer] = this.ctx?.currentTime ?? 0;
       this.playAt(obstacleSound(kind), x, z);
     }));
-    on('animal:bump', safe(({ kind, racer, x, z }) => {
+    on('animal:bump', safe(({ kind, racer, x, z, damaging }) => {
       this.lastObstacleHit[racer] = this.ctx?.currentTime ?? 0;
-      this.playAt('boing', x, z, 0.7);
+      this.playAt(damaging ? 'carBump' : 'boing', x, z, 0.7); // big animals dent the car: a thud, not a boing
       this.playAt(animalVoice(kind), x, z);
     }));
     on('animal:crossing', safe(({ kind, x, z }) => this.playAt(animalVoice(kind), x, z, 0.5)));
