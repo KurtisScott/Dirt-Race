@@ -293,14 +293,14 @@ The check found the hill too easy: 5 of 6 cars summited in 7–12 s of the 45 s 
 - **Layout:** the first half (town → rocky) is unchanged. The forest climbs north, the canyon crosses the top of the map heading east, the snowy pass and the desert run down the east side, the desert sweeps west into the riverside run, and the river / finish / jump run north up the middle. No two legs come within 227 m of each other (checked by plotting; the valley walls never merge). The terrain grid is 996 × 2002 m (500k nodes, was 231k); chunks outside the valley walls are never built.
 - **Forest trail:** narrow (5 m half-width) dirt track, dense pines/trees right up to the verge, six fallen logs poking ~1.8 m into the road (fixed, tagged `static/'log'`, emit `obstacle:hit 'log'`), a log ramp. New forest-floor terrain layer.
 - **Rocky canyon:** the valley walls close in (17–34 m from the centre-line instead of 48–72) and rise 34 m, red sandstone layer; boulders on the road edges, a red rock ramp, and a **wooden road bridge over a 12 m-deep gorge** (a tilted cuboid deck + rail colliders; `CourseTrack` heights follow the deck so the AI's slope profile and the progress strip are right; checkpoints never land on it).
-- **Snowy pass:** the road climbs a 22 m saddle (≤ 10.4° grades; everything stays under the 14° `climbPower` threshold, steepest grade on the race route asserted < 12°), snow layer, snowy pines, snow-capped walls, cone gates. **Physics surface is `gravel`** (grip 0.7): a real `snow`/`ice` `SurfaceType` would ripple into `vehicles/` (surface speed caps), `fx/` and `audio/` tables owned by other agents mid-merge. After the merge, adding `snow: {grip ~0.55, drag 0.05, rolling 0.4}` and mapping it in `buildSurfaces` is a one-liner here.
+- **Snowy pass:** the road climbs a 22 m saddle (≤ 10.4° grades; everything stays under the 14° `climbPower` threshold, steepest grade on the race route asserted < 12°), snow layer, snowy pines, snow-capped walls, cone gates. Physics surface was `gravel` on this branch; the integration pass added a real `snow` surface (see "Round 2 integration" below).
 - **Desert:** two sand-coloured dune jumps, cacti. **River:** the river is now a polyline (rasterised into per-node `(a, b)` like the road distance field): it runs 24 m to the right of the riverside road, follows the left turn, bends across the road line where the log bridge is, and on through the ford. The Ω-loop is mirrored so the ford is on the far side from the incoming river. The water is one ribbon mesh along the polyline.
 - **More obstacles and jumps:** 6 ramps (was 2), fallen logs, canyon/snow boulders, snow cone gates, cones lining the jump run-up, a hay wall at the end of the run-off.
 - **Perf on a doubled world** (see "Perf" below): terrain chunks and prop chunks are frustum-culled per 80–160 m, so draw calls per view barely changed; triangles in view went up modestly (denser forest). Memory doubled (vertex buffers 25 → 53 MB, grid arrays 3.7 → 8 MB). `layerWeights` no longer allocates two arrays per vertex (it ran ~1.3M times). No streaming was needed; it's the obvious next step if old iPads struggle with memory: build chunk geometry lazily when the player gets within ~600 m.
 
 ### End jump (SPEC round 2 item 3, replaces the bonus hill)
 - The bonus hill, summit flag, summit logic, `race:summit`, `finishAt`, `summitRadiusM`, `TrackPath.summitS` and `World.summit` are gone. New: `World.jump: JumpInfo`, `race:takeoff`, `race:jump {distanceM, bonus, crashed}`, `RacerResult.jumpM/jumpCrashed`, `RaceResults.jumpBonusM`.
-- **Shape:** finish line → 230 m straight asphalt run-up (cones and fences either side, a "BIG JUMP!" gantry) → 16 m curved ramp (circular arc to 12°, 2.0 m lip) → 140 m landing hill (8 m flat table, then it steepens to 11°, holds and rounds out; ~21 m total drop) → 110 m sand run-off with a berm and a hay wall. Landing on a matching downslope keeps touchdowns survivable at 3 s of air.
+- **Shape:** finish line → 230 m straight asphalt run-up (cones and fences either side, a "BIG JUMP!" gantry) → 16 m curved ramp → landing hill → sand run-off (ramp and hill re-shaped in the integration pass, see "Round 2 integration" below) with a berm and a hay wall. Landing on a matching downslope keeps touchdowns survivable at 3 s of air.
 - **Rules:** one attempt per finisher within its 45 s window. Take-off = no wheel contact near the lip; touchdown = first step with ≥ 2 wheels down; it counts if the car stays upright for 1 s. Distance = horizontal metres along the centre-line from the lip to the touchdown point. Past the gold bonus line on the wheels = +1. Driving past the lip without leaving the ground ends the attempt at 0 m; a Reset mid-air is a crash. Afterwards the race holds the car (brakes) and it stops in the run-off. An attempt already airborne when the window runs out still gets to land.
 - **Kid-readable markers:** painted white lines every 10 m across the landing zone, numbered boards on both sides (one atlas texture → one draw call), and the bonus line in thick gold with two tall fog-free gold posts, waving flags and a "+1 BONUS" banner between them. The progress strip shows a ramp wedge at the lip and a ⭐ at the bonus line.
 - **The AI** drives every difficulty flat out after the finish line (full top speed, no mistakes or easing off), so Easy's computer gets the same jump as Hard's.
@@ -315,7 +315,7 @@ The check found the hill too easy: 5 of 6 cars summited in 7–12 s of the 45 s 
   | Monster truck | 96 km/h | 53 m | 52 m | 2.0 s | short |
   | Grandma's sedan | 94 km/h | 50 m | 47 m | 1.8 s | short |
 
-  **Bonus line 58 m** (`JUMP_BONUS_M`). Everyone lands on the wheels. Fast/light cars need ≥ ~100 km/h at the lip (≈ 90 % of a pickup's top speed), so a bad run-up (lifting, a wobble, damage slowing the car) can cost the bonus; the monster truck misses by ~5 m ("so close!"), the sedan by ~8–11 m. Iterations: 15°/2.4 m ramp gave 55–130 m (sports overshooting the landing zone); 12°/2.0 m gives the table above. Wobbly steering (`NOISE=0.35`) changes distances by < 6 m.
+  *(Superseded by the 16-vehicle retune in "Round 2 integration" below.)* **Bonus line 58 m** (`JUMP_BONUS_M`). Everyone lands on the wheels. Fast/light cars need ≥ ~100 km/h at the lip (≈ 90 % of a pickup's top speed), so a bad run-up (lifting, a wobble, damage slowing the car) can cost the bonus; the monster truck misses by ~5 m ("so close!"), the sedan by ~8–11 m. Iterations: 15°/2.4 m ramp gave 55–130 m (sports overshooting the landing zone); 12°/2.0 m gives the table above. Wobbly steering (`NOISE=0.35`) changes distances by < 6 m.
 - **Retuning after the 16-vehicle merge:** everything is in `world/layout.ts` (`JUMP_RAMP_DEG`, `JUMP_RAMP_HEIGHT_M`, `JUMP_BONUS_M`, `JUMP_LAND_DEG`, `JUMP_LANDING_M`); rerun `npx tsx scripts/jump-tune.ts` and update `MAKES_IT` in world-test. Note for the damage system: `vehicle:landed.impact` is the *vertical* speed (14–22 m/s here); because the landing hill slopes with the trajectory, the slope-normal impact is roughly half of that. Landing damage for the end jump should use the normal component (or be capped), otherwise every successful jump would be heavily damaging.
 
 ### Animals (SPEC round 2 item 5)
@@ -339,3 +339,56 @@ Measured with `npx tsx scripts/course-stats.ts` (Node, best of 3) and `node scri
 | Colliders | 625 | 1098 |
 
 Draw calls / triangles in view per zone (Medium): before — town 107/122k, farm 106/145k, mud 124/184k, rocky 79/98k, desert 59/53k, river 115/152k, finish 104/131k, hill 108/143k (max 124). After — town 101/122k, farm 101/146k, mud 105/169k, rocky 86/143k, **forest 81/145k, canyon 85/116k, gorge 89/127k, snow 93/147k**, desert 98/122k, **riverside 122/199k**, river 120/167k, finish 139/190k, **run-up 129/175k, jump mid-air 147/193k, landing zone 137/180k** (max 147; animal close-ups 75–127). Per-view cost is about the same because everything is culled per chunk; the end-jump area is the busiest view (markers, gate, cones, hay, plus both straights in view) and sits just under the ~150 guidance. If it's too much on the A10X: drop the sign posts' shadows or merge the gate into the props chunk. **Not measured on a real iPad**; on an A12 expect the course build to take roughly 5–9 s behind the title screen (about twice the old estimate).
+
+## Round 2 integration (merge of r2-vehicles + r2-course, fixes and tuning), 2026-11-02
+
+### Merge
+- Both branches merged into master with merge commits. Conflicts resolved by combining: `animal:bump {damaging, speed}`, `RacerResult` has both `damage` and `jumpM/jumpCrashed`, the results card shows the jump line *and* the damage line, world-test drives all 16 vehicles and reports damage. Leftover summit/bonus-hill references (README, comments, physics-test labels) were removed or reworded; the visible stat is **Jump** everywhere. `spec.climb` stays as a hidden steep-slope physics value (no hill uses it now; physics-test keeps the steep-climb regression).
+
+### Landing damage along the ground normal
+- The vehicles branch scored hard landings on raw downward speed; the end jump lands at 14–22 m/s vertical on a downslope, so every good jump hurt. Now `vehicle.ts` averages the wheels' contact normals at touchdown and uses the **last airborne velocity along that normal** (`vehicle:landed {impact, vertical, misalignDeg}`; `impact` = normal component, which also drives camera shake / thump volume).
+- **Attitude:** `landingDamage(impact, tolerance, scale, misalignDeg)` — up to 18° between the car's up axis and the ground normal is free (a level car landing on a sloped hill); beyond that the effective impact grows to ×1.6 at 45°+.
+- **Body first:** if the chassis touches the ground before the wheels (nose-dive, side/roof landing), the contact-force handler scores it as the flight's landing (once per flight), with the misalignment penalty. Previously that path was ignored (ground contacts with a vertical-ish normal), so nose-dives were free.
+- **Steep ground counts as a wall:** ground contacts are ignored only when |n.y| > 0.8 (was 0.6), so driving the body into a canyon wall / steep bank is a wall hit.
+- Results (world-test "hard landings", coming down at ~15 m/s onto the flat run-off): pickup 10.9 % level / 15.3 % nose-dive 45°, sports 10.4 / 21.6 %, bus 9.0 / 9.9 % (tough, capped). A clean end-jump landing: 0 % for all 16 vehicles, impact 4.8–7.0 m/s along the normal (vertical 5.4–18.5).
+
+### End jump retune (16 vehicles)
+- **Landing hill reshaped like a ski-jump hill** (`world/layout.ts`): 20 m flat table, then the drop follows a parabola `0.0018·(u − 20)²` (bends away under the flight paths so the speed *into* the hill stays ~5–7 m/s wherever a car lands), slope capped at 24°, rounding out over the last 25 m of a 150 m landing zone; run-off 100 m (total unchanged). Ramp lowered to 8° / 1.3 m (flatter trajectories; with the old 12° kicker any downhill landing meets the car at > 20°). An 11°–18° straight landing slope was tried first: impacts stayed 10–18 m/s.
+- **Launch pop (jump stat):** many cars share a top speed (buggy, quad, pickups, SUV, van all 112–115 km/h), so geometry alone couldn't split them. Leaving a ramp collider (`ColliderTag.ramp`, end jump + course ramps) at > 12 m/s adds `LAUNCH_POP[jump]` = 0 / 0 / 1.2 / 1.8 / 2.0 m/s upward (stat 1..5) — the "Jump" stat on the spin screen now means what it says.
+- **Bonus line 45 m** (`JUMP_BONUS_M`). `scripts/jump-tune.ts` runs all 16 (options START, NOISE, DAMAGE, LIFT, HOLD). Clean run-up (from 170 m before the finish) / standing start at the finish / sloppy run-up (1.5 s off the throttle 120 m before the lip):
+
+  | Group | Vehicle | Lip | Clean | Standing | Sloppy |
+  | --- | --- | --- | --- | --- | --- |
+  | fast | Sports car | 148 km/h | 107.3 m | 97.1 | 85.5 |
+  | fast | Trophy truck | 131 | 75.1 | 67.6 | 62.1 |
+  | fast | Hot hatch | 131 | 74.1 | 71.0 | 64.0 |
+  | fast | Rally car | 131 | 73.0 | 69.4 | 63.6 |
+  | fast | Muscle car | 131 | 71.6 | 69.6 | 62.3 |
+  | fast | Dune buggy | 114 | 54.8 | 53.3 | 50.2 |
+  | mid | Quad bike | 114 | 49.1 | 47.9 | 44.8 |
+  | mid | Lifted pickup | 114 | 47.8 | 45.2 | 41.3 |
+  | mid | Pickup | 114 | 46.4 | 43.6 | 40.2 |
+  | mid | Family SUV | 114 | 46.0 | 44.2 | 40.9 |
+  | slow | Delivery van | 112 | 36.9 | 33.8 | 31.0 |
+  | slow | Monster truck | 96 | 28.7 | 28.5 | 27.1 |
+  | slow | Classic 4x4 | 96 | 27.9 | 27.2 | 26.1 |
+  | slow | School bus | 95 | 25.4 | 24.4 | 22.8 |
+  | slow | Grandma's sedan | 95 | 25.2 | 24.9 | 22.5 |
+  | slow | Farm tractor | 78 | 20.3 | 20.0 | 19.9 |
+
+  world-test asserts: fast make it in all three; mid make it with a clean run-up (by < 6 m) and fall short after a sloppy one (pickup and SUV also miss from a standing start); slow never; sedan > 15 m short; everyone lands on the wheels with ≤ 2 % damage. Damage matters: 30 % damage (−7.5 % top speed) drops every mid car short and leaves the buggy at ~45 m. The computer (flat out after the finish on every difficulty) gets the same results.
+
+### Snow surface
+- New `SurfaceType 'snow'`: grip 0.48 (gravel 0.7, mud 0.5), drag 0.07, rolling 0.5, speed penalty 0.2 for low off-road cars. Used on the snowy pass wherever `snowW > 0.5` (road and verges); gravel at the start/end of the climb. Road texture snow share raised a little where the physics is snow (no restyle).
+- Effects: a snow rooster tail (bright clumps that fall back + a fine powder cloud, same particle pool). Audio: a `snow` surface loop (low whump bed + squeaky compressed-snow crunches + grit) and a lower, softer `crunch` on entering snow.
+- Speeds on flat snow 67–122 km/h (every vehicle > 40 km/h); all 16 test drivers and the AI runs get over the pass without resets; the test driver's corner-speed model uses grip 0.55 on snow, the AI reads `SURFACES` itself.
+
+### Damage on the new course (world-test)
+- **Centre-line drives, all 16 (animals on):** 0 % for 11 vehicles; the rest is animals hit at full speed by a driver that doesn't avoid them (bear/moose/bull 9–18 %), plus the hot hatch's test driver over-correcting after a farm pothole into a fence (17.6 %). Non-animal course damage < 20 % asserted.
+- **Computer driver (10 runs incl. bus, quad, rally/hard, pickup/hard over the log bridge):** 0 % in every run, asserted < 30 %. (Before the fix below the buggy took 32 % from one boulder.)
+- **Sloppy (weaving) drivers:** pickup 0–14 %, sports 0 %, bus 3–21 %, quad ~18 % (crooked ramp landings in the rocky hills), hot hatch 33–85 % (fragile and fast: two boulder hits at the 30 % cap). Mean asserted < 40 %, none wrecked.
+- **Crash probes:** canyon wall at ~60 km/h, 60° — pickup 9.9 %, sports 15.0 %; gorge-bridge rail at ~55 km/h, 22° — pickup 3.2 %, sports 5.5 %; straight over the gorge bridge (deck seams) 0 %. Cone gates and hay are debris (no damage); ramp lips, the log bridge and the end-jump run-off/berm (15 s on full throttle after landing) cost nothing.
+- **Fixes found on the way:** (1) the AI's obstacle rays were at chassis height, so tall cars (buggy, quad) didn't see low boulders — rays now alternate chassis height and 0.5 m lower. (2) A bear pinned in front of the bus/van: the "let physics push it" radius was 3 m from the car's *centre*, so long vehicles hit a velocity-driven wall (bus stuck, 25 resets, 100 % damage from 29 bumps). The radius now uses each car's collider reach; an animal pinned under/against a car for 1.2 s scrambles out sideways; and a car takes damage from at most one damaging animal bump per 4 s (`DAMAGE.animalCooldownS`).
+
+### Animal voices
+- Synth voices for the new animals (`audio/sfx.ts`, a small formant `voiced()` helper): cow `moo`, bull `bellow` (+ snorts), moose `mooseCall` (low nasal groan), boar `oink` (grunts + squeal), goat `goatBleat` (fast-wobbling "meh-eh-eh"), rabbit `hop` (two soft thumps + a tiny squeak), camel `camelGroan` (gurgling grumble). audio-test asserts every animal kind has its own voice. A damaging bump plays a thud (`carBump`) under the voice instead of the cartoon boing.

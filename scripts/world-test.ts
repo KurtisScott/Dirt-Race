@@ -30,6 +30,7 @@ const { ANIMAL_SPECS } = await import('../src/world/animals');
 type VehicleKind = import('../src/core/types').VehicleKind;
 
 await initRapier();
+(globalThis as { __dmgLog?: boolean }).__dmgLog = !!process.env.DMG_TRACE;
 let failures = 0;
 const check = (ok: boolean, msg: string): void => {
   console.log(`${ok ? '  ok ' : ' FAIL'} ${msg}`);
@@ -74,7 +75,7 @@ function makeWorld() {
     rocky: ['gravel'],
     forest: ['dirt'],
     canyon: ['gravel'],
-    snow: ['gravel'],
+    snow: ['snow', 'gravel'],
     desert: ['sand'],
     river: ['dirt', 'water'],
     finish: ['dirt', 'asphalt'],
@@ -265,18 +266,39 @@ interface DriveResult {
   hits: number;
   /** Round 2: damage at the end of the run (%). */
   damage: number;
+  /** Damage per zone (and source) — where did it come from? */
+  dmgBy: Record<string, number>;
 }
 
-function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean; maxS?: number; wander?: boolean } = {}): DriveResult {
+/** Collect `car:damage` for one racer into "zone:source" buckets. */
+function damageLog(world: InstanceType<typeof RaceCourse>, racer: string, sOf: () => number) {
+  const by: Record<string, number> = {};
+  const off = events.on('car:damage', (e) => {
+    if (e.racer !== racer) return;
+    const s = sOf();
+    const key = `${world.zoneAt(s).id}:${e.source ?? '?'}`;
+    by[key] = (by[key] ?? 0) + e.delta;
+    if (process.env.DMG_TRACE) console.log(`    dmg +${e.delta.toFixed(1)}% ${key} s=${s.toFixed(0)}`);
+  });
+  return { by, off };
+}
+const fmtDmg = (by: Record<string, number>) =>
+  Object.entries(by)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${k} ${v.toFixed(1)}`)
+    .join(', ') || 'none';
+
+function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean; maxS?: number; wander?: boolean; wobble?: number } = {}): DriveResult {
   const { physics, world } = makeWorld();
   world.animalsEnabled = opts.animals ?? true;
   const c = world.data;
   const v = createVehicle({ physics, surfaces: world, spec: VEHICLES[kind], paint: 0xff0000, racer: 'player', spawn: world.spawns.player });
   let bumps = 0;
   let hits = 0;
-  const offs = [events.on('animal:bump', () => bumps++), events.on('obstacle:hit', () => hits++)];
-  const systems: import('../src/core/types').System[] = [world, v];
   let s = 0;
+  const dl = damageLog(world, 'player', () => s);
+  const offs = [events.on('animal:bump', () => bumps++), events.on('obstacle:hit', () => hits++), dl.off];
+  const systems: import('../src/core/types').System[] = [world, v];
   let lastCp = -1;
   let resets = 0;
   let finishedAt: number | null = null;
@@ -328,9 +350,11 @@ function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean;
         maxTurn = Math.max(maxTurn, Math.acos(THREE.MathUtils.clamp(t0.x * tk.x + t0.z * tk.z, -1, 1)) / k);
       }
       const surf = world.surfaceAt(v.position.x, v.position.z);
-      const grip = surf === 'asphalt' ? 1 : surf === 'mud' || surf === 'sand' ? 0.6 : 0.8;
+      const grip = surf === 'asphalt' ? 1 : surf === 'snow' ? 0.55 : surf === 'mud' || surf === 'sand' ? 0.6 : 0.8;
       const vmax = maxTurn > 1e-3 ? Math.sqrt((6 * grip) / maxTurn) : 99;
-      v.input.steer = THREE.MathUtils.clamp(-ang * 2.2, -1, 1);
+      // `wobble`: a sloppy driver (a kid on tilt steering) weaving across the road.
+      const wob = opts.wobble ? opts.wobble * Math.sin(t * 0.9) * Math.sin(t * 2.3 + 1) : 0;
+      v.input.steer = THREE.MathUtils.clamp(-ang * 2.2 + wob, -1, 1);
       v.input.throttle = spd < vmax ? 1 : 0;
       v.input.brake = spd > vmax + 3 ? 1 : 0;
     }
@@ -361,14 +385,14 @@ function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean;
     if (opts.wander && t > 22) break;
   }
   offs.forEach((f) => f());
-  const out = { finishedAt, maxS: Math.max(s, progressS), resets, stuckAt, bumps, hits, damage: v.damage };
+  const out = { finishedAt, maxS: Math.max(s, progressS), resets, stuckAt, bumps, hits, damage: v.damage, dmgBy: dl.by };
   v.dispose();
   world.dispose();
   physics.dispose();
   return out;
 }
 
-const kinds = (process.env.WORLD_KINDS?.split(',') ?? Object.keys(VEHICLES)) as VehicleKind[];
+const kinds = (process.env.WORLD_KINDS?.split(',').filter((k) => k in VEHICLES) ?? Object.keys(VEHICLES)) as VehicleKind[];
 const results: Record<string, DriveResult> = {};
 for (const kind of kinds) {
   console.log(`\n=== drive: ${kind} follows the centre-line ===`);
@@ -380,27 +404,148 @@ for (const kind of kinds) {
   );
   check(r.finishedAt !== null, `${kind} reaches the finish line (${r.finishedAt?.toFixed(1) ?? 'never'} s)`);
   check(r.stuckAt.length <= 1, `${kind} never trapped (${r.stuckAt.length} stuck resets)`);
+  console.log(`  info damage by zone:source ${fmtDmg(r.dmgBy)}`);
+  // The follower drives straight into any animal at full speed (a bear at 130 km/h ≈ 16–18 %), so judge the
+  // course itself on the non-animal damage.
+  const course = Object.entries(r.dmgBy).filter(([k]) => !k.endsWith(':animal')).reduce((a, [, v]) => a + v, 0);
+  check(course < 20 && r.damage < 40, `${kind}: centre-line drive ends with modest damage (${r.damage.toFixed(0)}%, ${course.toFixed(0)}% from the course itself)`);
 }
 const fin = kinds.map((k) => results[k].finishedAt).filter((x): x is number => x !== null);
 if (fin.length) check(Math.max(...fin) < 420, `every finish well inside the 8-minute timer (slowest ${Math.max(...fin).toFixed(0)} s)`);
 
 // -------------------------------------------------------------- end jump outcomes (SPEC round 2)
-// A good run-up: full throttle from 170 m before the finish line (arriving at speed), and from a standing
-// start at the finish line (what a Reset after the finish gives you). Jump distance = lip → touchdown.
+// A good run-up: full throttle from 170 m before the finish line (arriving at speed); a standing start at
+// the finish line (what a Reset after the finish gives you); a sloppy run-up (1.5 s off the throttle
+// 120 m before the lip). Jump distance = lip → touchdown. Groups: DECISIONS.md "End jump retune (16 vehicles)".
 console.log('\n=== end jump ===');
-const MAKES_IT = ['sports', 'muscle', 'buggy', 'pickup'];
+const FAST = ['sports', 'muscle', 'rally', 'trophy', 'hatch', 'buggy'];
+const MID = ['pickup', 'lifted', 'atv', 'suv'];
+const SLOW = ['van', 'jeep', 'monster', 'sedan', 'bus', 'tractor'];
+check([...FAST, ...MID, ...SLOW].sort().join() === Object.keys(VEHICLES).sort().join(), 'every vehicle is in a jump group');
+const MAKES_IT = FAST;
+const jumpTable: string[] = [];
 for (const kind of kinds) {
-  for (const [label, before] of [['run-up', 170], ['standing start at the finish', 0]] as const) {
-    const r = jumpRun(kind, before);
-    console.log(`  info ${kind} (${label}): lip ${r.lipKmh.toFixed(0)} km/h, ${r.dist.toFixed(1)} m, air ${r.air.toFixed(2)} s, impact ${r.impact.toFixed(1)} m/s, ${r.upright ? 'on its wheels' : 'CRASH'}${r.bonus ? ', BONUS' : ''}`);
+  const runs = [
+    ['run-up', jumpRun(kind, 170)],
+    ['standing start', jumpRun(kind, 0)],
+    ['sloppy run-up', jumpRun(kind, 170, 0, { lift: 1.5 })],
+  ] as const;
+  for (const [label, r] of runs) {
+    console.log(`  info ${kind} (${label}): lip ${r.lipKmh.toFixed(0)} km/h, ${r.dist.toFixed(1)} m, air ${r.air.toFixed(2)} s, impact ${r.impact.toFixed(1)} m/s (vertical ${r.vertical.toFixed(1)}), damage ${r.damage.toFixed(1)}%, ${r.upright ? 'on its wheels' : 'CRASH'}${r.bonus ? ', BONUS' : ''}`);
     check(r.upright, `${kind} (${label}) lands on its wheels`);
-    if (MAKES_IT.includes(kind)) check(r.bonus, `${kind} (${label}) clears the bonus line (${r.dist.toFixed(1)} m)`);
-    else check(!r.bonus, `${kind} (${label}) falls short of the bonus line (${r.dist.toFixed(1)} m)`);
-    if (kind === 'sedan') check(r.dist < jumpBonusM() - 6, `Grandma's sedan is nowhere near (${r.dist.toFixed(1)} m)`);
+    check(r.damage <= 2, `${kind} (${label}): a clean landing on the landing hill costs little or nothing (${r.damage.toFixed(1)}%)`);
   }
+  const [clean, standing, sloppy] = runs.map((x) => x[1]);
+  jumpTable.push(`${kind} ${clean.lipKmh.toFixed(0)} km/h ${clean.dist.toFixed(1)}/${standing.dist.toFixed(1)}/${sloppy.dist.toFixed(1)} m`);
+  if (FAST.includes(kind)) {
+    check(clean.bonus && standing.bonus && sloppy.bonus, `fast ${kind} makes the bonus line even from a standing start or a sloppy run-up (${clean.dist.toFixed(1)} / ${standing.dist.toFixed(1)} / ${sloppy.dist.toFixed(1)} m)`);
+  } else if (MID.includes(kind)) {
+    check(clean.bonus && clean.dist < jumpBonusM() + 6, `mid ${kind} just makes it with a clean run-up (${clean.dist.toFixed(1)} m, line ${jumpBonusM()} m)`);
+    check(!sloppy.bonus, `mid ${kind} falls short after a sloppy run-up (${sloppy.dist.toFixed(1)} m)`);
+  } else {
+    check(!clean.bonus && !standing.bonus, `slow ${kind} falls short (${clean.dist.toFixed(1)} m)`);
+  }
+  if (kind === 'sedan') check(clean.dist < jumpBonusM() - 15, `Grandma's sedan is nowhere near (${clean.dist.toFixed(1)} m)`);
 }
+console.log(`  info jump table (clean / standing / sloppy): ${jumpTable.join('; ')}`);
 function jumpBonusM(): number {
   return JUMP_BONUS_M;
+}
+
+// Sloppy drivers (weaving on the steering) through the whole course with animals: modest damage, and
+// where it comes from per zone. Then crash probes: canyon wall, gorge-bridge rail, a boulder.
+if (!process.env.WORLD_KINDS || process.env.WORLD_SLOPPY) {
+  console.log('\n=== sloppy drivers (weaving) ===');
+  const dmgs: number[] = [];
+  for (const kind of ['pickup', 'sports', 'hatch', 'bus', 'atv'] as VehicleKind[]) {
+    const r = drive(kind, { wobble: 0.45 });
+    dmgs.push(r.damage);
+    console.log(`  info ${kind}: finish ${r.finishedAt?.toFixed(0) ?? '—'} s, damage ${r.damage.toFixed(0)}%, resets ${r.resets}; by zone:source ${fmtDmg(r.dmgBy)}`);
+    check(r.finishedAt !== null && r.damage < 85, `sloppy ${kind} finishes, not wrecked (${r.damage.toFixed(0)}%)`);
+  }
+  const mean = dmgs.reduce((a, b) => a + b, 0) / dmgs.length;
+  check(mean < 40, `sloppy drivers average moderate damage (${mean.toFixed(0)}%)`);
+}
+{
+  console.log('\n=== crash probes ===');
+  /** Spawn at (s, lateral) turned `turnDeg` off the road, full throttle for `secs`; damage taken. */
+  const probe = (kind: VehicleKind, s: number, lat: number, turnDeg: number, secs: number, v0: number, deck = false) => {
+    const { physics, world } = makeWorld();
+    world.animalsEnabled = false;
+    const at = world.data.spawnAt(s, lat);
+    if (deck) at.y = world.data.gorgeDeckY(s);
+    const v = createVehicle({ physics, surfaces: world, spec: VEHICLES[kind], paint: 0, racer: 'player', spawn: { ...at, yaw: at.yaw + (turnDeg * Math.PI) / 180 } });
+    const dl = damageLog(world, 'player', () => s);
+    const yaw = at.yaw + (turnDeg * Math.PI) / 180;
+    (v as unknown as { body: { setLinvel(v: object, w: boolean): void } }).body.setLinvel({ x: Math.sin(yaw) * v0, y: 0, z: Math.cos(yaw) * v0 }, true);
+    let top = 0;
+    for (let i = 0; i < 60 * secs; i++) {
+      v.input.throttle = 1;
+      v.input.steer = 0;
+      v.fixedUpdate!(PHYSICS_DT);
+      physics.step();
+      v.postPhysics!(PHYSICS_DT);
+      top = Math.max(top, v.speed);
+    }
+    dl.off();
+    const d = v.damage;
+    v.dispose();
+    world.dispose();
+    physics.dispose();
+    return { d, top: top * 3.6, by: fmtDmg(dl.by) };
+  };
+  const { world, physics } = makeWorld();
+  const canyon = world.zones.find((z) => z.id === 'canyon')!;
+  const g = world.data.gorge;
+  world.dispose();
+  physics.dispose();
+  for (const kind of ['pickup', 'sports'] as VehicleKind[]) {
+    const wall = probe(kind, canyon.startS + 200, 0, 60, 4, 17);
+    console.log(`  info ${kind} into the canyon wall (60°, 61 km/h start) at up to ${wall.top.toFixed(0)} km/h: ${wall.d.toFixed(1)}% (${wall.by})`);
+    check(wall.d >= 5, `${kind}: driving into the canyon wall hurts (${wall.d.toFixed(1)}%)`);
+    const rail = probe(kind, g.s0 + 3, 0, 22, 3, 15, true);
+    console.log(`  info ${kind} into the gorge-bridge rail (22°, 54 km/h start) at up to ${rail.top.toFixed(0)} km/h: ${rail.d.toFixed(1)}% (${rail.by})`);
+    check(rail.d >= 3, `${kind}: hitting the gorge-bridge rail hurts (${rail.d.toFixed(1)}%)`);
+    const straight = probe(kind, g.s0 - 40, 0, 0, 4, 12);
+    check(straight.d === 0, `${kind}: straight over the gorge bridge (deck seams) costs nothing (${straight.d.toFixed(1)}%)`);
+  }
+}
+
+// Hard landings still hurt: a car coming down level onto the flat run-off at ~15 m/s, and the same nose-down 45°.
+{
+  console.log('\n=== hard landings ===');
+  const drop = (kind: VehicleKind, pitchDeg: number) => {
+    const { physics, world } = makeWorld();
+    world.animalsEnabled = false;
+    const j = world.jump;
+    const at = world.data.spawnAt(j.runoffS + 25, 0);
+    const v = createVehicle({ physics, surfaces: world, spec: VEHICLES[kind], paint: 0, racer: 'player', spawn: { ...at, y: at.y + 6 } });
+    const b = (v as unknown as { body: { setRotation(q: object, w: boolean): void; setLinvel(v: object, w: boolean): void } }).body;
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), at.yaw).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), (pitchDeg * Math.PI) / 180));
+    b.setRotation(q, true);
+    const f = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
+    const h = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), at.yaw);
+    b.setLinvel({ x: h.x * 10, y: -11, z: h.z * 10 }, true);
+    void f;
+    for (let i = 0; i < 60 * 3; i++) {
+      v.input.throttle = 0;
+      v.fixedUpdate!(PHYSICS_DT);
+      physics.step();
+      v.postPhysics!(PHYSICS_DT);
+    }
+    const d = v.damage;
+    v.dispose();
+    world.dispose();
+    physics.dispose();
+    return d;
+  };
+  for (const kind of ['pickup', 'sports', 'bus'] as VehicleKind[]) {
+    const flat = drop(kind, 0);
+    const nose = drop(kind, 45);
+    console.log(`  info ${kind}: level drop onto the run-off ${flat.toFixed(1)}%, nose-dive ${nose.toFixed(1)}%`);
+    check(flat >= 3, `${kind}: coming down flat on the run-off at ~15 m/s hurts (${flat.toFixed(1)}%)`);
+    check(nose > flat, `${kind}: a nose-dive hurts more (${nose.toFixed(1)}%)`);
+  }
 }
 
 if (!process.env.WORLD_KINDS || process.env.WORLD_SHORTCUT) {
@@ -431,6 +576,7 @@ if (!process.env.WORLD_KINDS || process.env.WORLD_AI) {
     let lastCp = -1;
     let s = 0;
     let finished = false;
+    const dl = damageLog(world, 'cpu', () => s);
     ai.onRequestReset = () => {
       resets++;
       if (process.env.VERBOSE) console.log(`    reset requested at s=${s.toFixed(0)} (${world.zoneAt(s).id}) pos y=${v.position.y.toFixed(1)}`);
@@ -474,12 +620,20 @@ if (!process.env.WORLD_KINDS || process.env.WORLD_AI) {
       }
     }
     const damage = v.damage;
+    dl.off();
+    if (process.env.VERBOSE || damage > 10) console.log(`    ${kind}/${d} damage by zone:source ${fmtDmg(dl.by)}`);
     v.dispose();
     world.dispose();
     physics.dispose();
     return { finish, resets, shortcut: onShortcut > 30, lipKmh, jumpM, upright, damage };
   };
-  for (const [kind, d] of [['pickup', 'hard'], ['pickup', 'easy'], ['sedan', 'normal'], ['monster', 'normal'], ['buggy', 'normal'], ['sports', 'normal'], ['muscle', 'easy']] as const) {
+  const AI_RUNS: [VehicleKind, 'easy' | 'normal' | 'hard'][] = process.env.WORLD_AI_RUNS
+    ? (process.env.WORLD_AI_RUNS.split(',').map((x) => x.split(':')) as [VehicleKind, 'easy' | 'normal' | 'hard'][])
+    : process.env.WORLD_AI_ALL
+    ? (Object.keys(VEHICLES) as VehicleKind[]).map((k) => [k, 'normal'])
+    : [['pickup', 'hard'], ['pickup', 'easy'], ['sedan', 'normal'], ['monster', 'normal'], ['buggy', 'normal'], ['sports', 'normal'], ['muscle', 'easy'], ['bus', 'normal'], ['atv', 'easy'], ['rally', 'hard']];
+  const aiDamage: string[] = [];
+  for (const [kind, d] of AI_RUNS) {
     const r = aiRun(kind, d);
     console.log(`  info ${kind}/${d}: finish ${r.finish?.toFixed(1) ?? '—'} s, damage ${r.damage.toFixed(0)}%, resets ${r.resets}, log bridge ${r.shortcut ? 'yes' : 'no'}, jump ${r.jumpM?.toFixed(1) ?? '—'} m at ${r.lipKmh.toFixed(0)} km/h ${r.upright ? '' : '(CRASH)'}`);
     check(r.finish !== null && r.resets <= 1, `computer ${kind} on ${d} completes the course (${r.resets} resets)`);
@@ -487,8 +641,11 @@ if (!process.env.WORLD_KINDS || process.env.WORLD_AI) {
     if (d === 'easy') check(!r.shortcut, 'Easy computer stays on the road (ford)');
     check(r.jumpM !== null && r.upright, `computer ${kind}/${d} attempts the jump and lands on its wheels`);
     if (MAKES_IT.includes(kind)) check((r.jumpM ?? 0) >= jumpBonusM(), `computer ${kind}/${d} (full speed even on ${d}) earns the jump bonus (${r.jumpM?.toFixed(1)} m)`);
-    else check((r.jumpM ?? 0) < jumpBonusM(), `computer ${kind}/${d} falls short (${r.jumpM?.toFixed(1)} m)`);
+    else if (SLOW.includes(kind)) check((r.jumpM ?? 0) < jumpBonusM(), `computer ${kind}/${d} falls short (${r.jumpM?.toFixed(1)} m)`);
+    check(r.damage < 30, `computer ${kind}/${d}: a clean race costs modest damage (${r.damage.toFixed(0)}%)`);
+    aiDamage.push(`${kind}/${d} ${r.damage.toFixed(0)}%`);
   }
+  console.log(`  info computer damage per race: ${aiDamage.join(', ')}`);
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall world checks passed');

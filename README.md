@@ -28,7 +28,7 @@ npm run typecheck    # strict TypeScript (app + scripts)
 npm test             # tilt maths, headless physics, race/AI rules, audio generators (~1 min, no browser)
 npm run build        # icons → typecheck → dist/
 npm run smoke        # plays the BUILT game in headless Chrome (see below)
-npm run world-test   # drives the real course with all six vehicles + the computer (~1–2 min)
+npm run world-test   # drives the real course with all 16 vehicles + the computer, jump + damage checks (~6 min)
 WORLD=race npm run race-test   # full race rules on the real course
 ```
 
