@@ -282,3 +282,16 @@ The check found the hill too easy: 5 of 6 cars summited in 7–12 s of the 45 s 
 - Audio maps animal voices by substring, so the new kinds get the generic "boing" until the audio module adds voices (moo, bleat, grunt…).
 
 ### Perf (before → after)
+
+Measured with `npx tsx scripts/course-stats.ts` (Node, best of 3) and `node scripts/world-shots.mjs` (headless Chrome + SwiftShader, Medium quality incl. the shadow pass, 1112×834):
+
+| | Before (2.49 km) | After (5.13 km) |
+| --- | --- | --- |
+| Course build (Node) | 1.22 s (data 0.40 + meshes/colliders 0.82) | 2.45 s (1.02 + 1.43) |
+| `[world] race course built` in Chrome (meshes/colliders half) | 2.8 s | 2.3–3.7 s (machine load varied) |
+| Load → ready (headless SwiftShader) | not measured | 11.5–15 s |
+| Terrain grid | 231k nodes (618 × 1486 m), 3.7 MB | 500k nodes (996 × 2002 m), 8.0 MB |
+| Whole scene | 289 meshes, 388k tris (terrain 214k), 25 MB vertex/index buffers | 596 meshes, 783k tris (terrain 418k), 53 MB |
+| Colliders | 625 | 1098 |
+
+Draw calls / triangles in view per zone (Medium): before — town 107/122k, farm 106/145k, mud 124/184k, rocky 79/98k, desert 59/53k, river 115/152k, finish 104/131k, hill 108/143k (max 124). After — town 101/122k, farm 101/146k, mud 105/169k, rocky 86/143k, **forest 81/145k, canyon 85/116k, gorge 89/127k, snow 93/147k**, desert 98/122k, **riverside 122/199k**, river 120/167k, finish 139/190k, **run-up 129/175k, jump mid-air 147/193k, landing zone 137/180k** (max 147; animal close-ups 75–127). Per-view cost is about the same because everything is culled per chunk; the end-jump area is the busiest view (markers, gate, cones, hay, plus both straights in view) and sits just under the ~150 guidance. If it's too much on the A10X: drop the sign posts' shadows or merge the gate into the props chunk. **Not measured on a real iPad**; on an A12 expect the course build to take roughly 5–9 s behind the title screen (about twice the old estimate).

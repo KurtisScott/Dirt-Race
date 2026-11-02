@@ -85,6 +85,7 @@ const freshRace = async () => {
     window.__dirt.race.startCountdown();
   });
   await page.waitForFunction(() => window.__dirt.race.phase === 'racing', null, { timeout: 60000, polling: 100 });
+  await simWait(1.2); // let the big "GO!" fade
 };
 const clearOverride = () => page.evaluate(() => (window.__dirt.camera.override = null));
 

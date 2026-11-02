@@ -687,14 +687,14 @@ export class RaceCourse implements World {
     const stripe = (s: number, width: number, color: THREE.Color, half: number): void => {
       const t = c.dirAt(s);
       const ctr = c.centre(s);
-      const n = 16;
+      const n = Math.ceil(half); // ~2 m pieces so the strip hugs the terrain
       const base = pos.length / 3;
       for (let k = 0; k <= n; k++) {
         const lat = -half + (2 * half * k) / n;
         for (const dz of [-width / 2, width / 2]) {
           const x = ctr.x + t.x * dz - t.y * lat;
           const z = ctr.y + t.y * dz + t.x * lat;
-          pos.push(x, c.heightAt(x, z) + 0.06, z);
+          pos.push(x, c.heightAt(x, z) + 0.08, z);
           col.push(color.r, color.g, color.b);
         }
         if (k > 0) {

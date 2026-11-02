@@ -463,7 +463,7 @@ export class RaceController implements System, RaceView {
     const racerResult = (p: RacerProgress): RacerResult => ({
       racer: p.racer,
       vehicle: this.vehicles[p.racer]?.spec.name ?? '',
-      distanceM: Math.max(0, Math.round((p.finished ? Math.max(p.bestS, this.finishS) : p.bestS) - this.gridS[p.racer])),
+      distanceM: Math.max(0, Math.round((p.finished ? this.finishS : p.bestS) - this.gridS[p.racer])), // finishers: the race distance (not the jump run-off)
       finished: p.finished,
       timeS: p.finishTimeS,
       bonus: p.jumpBonus,

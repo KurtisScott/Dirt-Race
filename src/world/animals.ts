@@ -564,7 +564,7 @@ function buildAnimalModel(kind: AnimalKind): AnimalModel {
     case 'cow': {
       // Bull: black, wide horns, nose ring. Cow: white with black patches, pink udder, little horns.
       const bull = kind === 'bull';
-      const hide = bull ? 0x2a2420 : 0xf2efe8;
+      const hide = bull ? 0x3b2c24 : 0xf2efe8;
       const patch = bull ? 0x1a1614 : 0x1f1c1a;
       const parts = [
         part(box(0.95, 0.85, 1.9), hide, 0, 1.15, 0),
@@ -586,8 +586,9 @@ function buildAnimalModel(kind: AnimalKind): AnimalModel {
         parts.push(part(new THREE.TorusGeometry(0.08, 0.018, 4, 10), 0xe0b030, 0, 1.08, 1.56));
       } else {
         // Black patches (flattened blobs on the flanks and back) and a pink udder.
-        for (const [x, y, z, sx] of [[0.47, 1.2, 0.3, 1], [-0.47, 1.05, -0.4, 1], [0.47, 1.0, -0.55, 0.8], [0, 1.72, 0.2, 1.1], [-0.47, 1.3, 0.45, 0.7]] as const)
-          parts.push(part(ball(0.32, 7, 5), patch, x, y, z, 0.25, sx, sx * 1.2));
+        for (const [x, y, z, sz] of [[0.48, 1.25, 0.35, 1], [-0.48, 1.05, -0.4, 1.1], [0.48, 0.98, -0.55, 0.8], [-0.48, 1.35, 0.5, 0.7]] as const)
+          parts.push(part(ball(0.22, 7, 5), patch, x, y, z, 0.12, sz, sz * 1.3));
+        parts.push(part(ball(0.24, 7, 5), patch, 0.1, 1.73, 0.1, 1.2, 0.1, 1.5)); // a flat patch on the back
         parts.push(part(ball(0.18, 8, 6), 0xf0a8b4, 0, 0.72, -0.45, 1, 0.7, 1));
       }
       const leg = (): THREE.BufferGeometry => mergeGeometries([part(box(0.18, 0.78, 0.18), hide, 0, -0.39, 0), part(box(0.2, 0.12, 0.2), 0x2a2420, 0, -0.78, 0)])!;
@@ -684,7 +685,7 @@ function buildAnimalModel(kind: AnimalKind): AnimalModel {
       for (let k = 0; k < 7; k++) parts.push(part(box(0.1, 0.08, 0.14), 0x3c5523, 0, 0.53, -0.8 + k * 0.25));
       const tail = new THREE.Group();
       tail.position.set(0, 0.3, -0.9);
-      tail.add(mesh([part(cyl(0.05, 0.25, 1.6, 6), skin, 0, 0, -0.8, 1, 0.6, 1, Math.PI / 2)]));
+      tail.add(mesh([part(cyl(0.25, 0.05, 1.6, 6), skin, 0, 0, -0.65, 1, 1, 0.6, Math.PI / 2)])); // thick end tucked into the body
       const leg = (): THREE.BufferGeometry => part(box(0.14, 0.3, 0.16), skin, 0.08, -0.12, 0);
       const q = quadruped(parts, leg, [[0.4, 0.3, 0.6], [-0.4, 0.3, 0.6], [0.4, 0.3, -0.6], [-0.4, 0.3, -0.6]], 0.7);
       q.root.add(tail);
