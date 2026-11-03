@@ -24,3 +24,18 @@ Every third-party asset or library that ships in `dist/` must be listed here.
 No downloaded textures, models, fonts or sounds. `playwright-core`, `sharp`, `tsx`, `typescript`, `vite` and `vite-plugin-pwa` are dev-only tools and don't ship in `dist/`.
 
 Round 2 additions (all generated at runtime, original, no downloads): snow / forest-floor / red-sandstone terrain layers (`world/textures.ts`); snowy pines, cacti, fallen logs, gorge bridge, curved jump ramp, marker sign posts (`world/props.ts`); jump distance-marker sign atlas (canvas text or the built-in 5×7 pixel font, `world/textures.ts`); moose, wild boar, bull, cows, goats, rabbits, camel (`world/animals.ts`, three.js primitives).
+
+## Round 2 graphics (High/Ultra realism), 2026-11-03
+
+| Item | Source | License | Notes |
+| --- | --- | --- | --- |
+| `postprocessing` | npm `postprocessing` 6.39.6 (pmndrs) | Zlib | post chain: EffectComposer, bloom, tone mapping, SMAA, custom speed-blur / exposure / grade effects |
+| `n8ao` | npm `n8ao` 2.0.1 (N8python) | ISC (package.json) / CC0-1.0 (LICENSE file) | screen-space ambient occlusion (Ultra) |
+| `RoomEnvironment` | npm `three/examples/jsm` | MIT | studio reflections for the spin-screen car thumbnails (High/Ultra) |
+| Terrain PBR set: 12 layers (grass, dirt, gravel, mud, sand, rock, river bed, field, snow, forest floor, red sandstone, road hardpack) albedo + normal/height, asphalt albedo + normal/height, at 1024 px (Ultra) and 512 px (High) | generated at build time by `scripts/gen-textures.ts` → `public/tex/*.webp` (committed, regenerated only when the script changes) | original | tileable noise, scattered stones / blades / leaves, baked cavity AO, normals from height; mean colours calibrated to real-world albedos. 10.3 MB of WebP |
+| Sky, clouds, aerial-perspective fog, sky environment map (PMREM) | generated at runtime (`core/atmosphere.ts`, `core/renderer.ts`) | original | analytic sky shared by sky dome, fog and IBL |
+| Foliage atlas (broadleaf cluster, pine spray, snowy pine spray, bush) | drawn at runtime on a canvas (`world/vegetation.ts`) | original | |
+| Grass blades, foliage-card trees, displaced rocks, marker posts, house trim | generated at runtime (`world/grass.ts`, `world/vegetation.ts`, `world/props.ts`) | original | |
+| Car paint flakes / dirt, tyre tread, water, fur/hay/plastic surfaces, lit particles | shaders (`vehicles/models/kit.ts`, `world/terrainPBR.ts`, `world/vegetation.ts`, `fx/particles.ts`) | original | |
+
+Still no downloaded textures, models, HDRIs, fonts or sounds: GitHub/npm were searched for CC0 PBR texture sets and HDRIs, but the only candidates were either CC-BY with unclear per-image provenance (BabylonJS/Assets) or random packages, so everything is procedural and original. (The Poly Haven HDRIs mirrored in `pmndrs/drei-assets` are CC0 but would not match the game's fixed sun; not used.)

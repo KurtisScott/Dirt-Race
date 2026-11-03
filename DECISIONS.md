@@ -392,3 +392,45 @@ Draw calls / triangles in view per zone (Medium): before — town 107/122k, farm
 
 ### Animal voices
 - Synth voices for the new animals (`audio/sfx.ts`, a small formant `voiced()` helper): cow `moo`, bull `bellow` (+ snorts), moose `mooseCall` (low nasal groan), boar `oink` (grunts + squeal), goat `goatBleat` (fast-wobbling "meh-eh-eh"), rabbit `hop` (two soft thumps + a tiny squeak), camel `camelGroan` (gurgling grumble). audio-test asserts every animal kind has its own voice. A damaging bump plays a thud (`carBump`) under the voice instead of the cartoon boing.
+
+## Round 2: realistic graphics (graphics agent), 2026-11-03
+
+The family chose max realism by default, accepting lower frame rates on the A12 / A10X iPads, with a way to turn it down (SPEC Round 2 item 1).
+
+### Quality levels and the slow prompt
+- **New level Ultra, default everywhere.** Low/Medium keep the original look and cost (classic lighting tier, Lambert world, no post). High/Ultra are the new **PBR tier**: physically based materials everywhere, sky image-based lighting, post chain. Settings: Low / Med / High / Ultra / Auto.
+- **Auto off by default.** "Auto" still exists as an opt-in (the old drop-a-level monitor). Without it the monitor never changes the level; after 10 consecutive 1 s windows of racing above 50 ms (< 20 fps) it emits `quality:prompt` once, and the UI shows a small non-blocking card under the timer: "🐢 Game running slow — lower the graphics?" **Lower** (one level down, two when < ~13 fps) / **Keep**. The answer is saved (`settings.slowPrompt`) and it is never asked again; unanswered it hides after 20 s and isn't asked again that session.
+- **Migration:** saved settings without `qualityVersion` (everyone before Round 2) move to Ultra with Auto off once (`qualityVersion = 2`); later choices are kept. Shader-failure fallbacks unchanged (terrain `simple`, remembered); new: the PBR terrain falls back to the procedural splat if its program fails, and a post-chain construction error falls back to direct rendering.
+
+### Lighting
+- **One analytic sky function** (`core/atmosphere.ts`) feeds the sky dome (+ procedural cumulus on High/Ultra), the fog of every material (patched fog chunks: exponential haze coloured by the sky in the view direction, warmer toward the sun, thinner looking up = aerial perspective, distant hills melt into exactly the sky behind them) and a PMREM environment (sky + ground below the horizon) used as `scene.environment` on High/Ultra. A real HDRI was considered (Poly Haven CC0 via drei-assets) but its sun wouldn't match the fixed sun; the analytic one is consistent by construction.
+- **Shadows:** one cascade, fitted: the shadow box is pushed half its size ahead of the car along the view (most of the map covers what's on screen), texel-snapped; PCF soft radius 2 (High) / 3 (Ultra); 2048 / 3072 px. Three's CSM was rejected (needs every material patched, clashes with our onBeforeCompile shaders). 4096 was dropped: three's PCF shadow map is a colour + depth target pair, 128 MB at 4096.
+- **Tone mapping:** ACES in the post chain with exposure 1.15 and a light grade (saturation 1.08, gentle S-curve, warm highlights / cool shadows, vignette 0.22). AgX was tried first: too grey for a sunny kids' game. Low/Medium keep Neutral.
+- **Post (`core/post.ts`, `postprocessing` + `n8ao`):** Ultra: N8AO (half res, radius 1.4 m, intensity 1.6, no transparency pass), radial speed blur from 60 km/h (subtle, edges only), mip bloom (HDR threshold 1.1, half res; lamps and brake lights are HDR so they glow), SMAA medium. High: bloom + grade + SMAA low. No DOF. N8AO 2.0.1's multi-target helper breaks on three r187 (`texture` returns an array); `patchN8AOTargets` restores the standard getter.
+
+### Terrain and roads
+- **No downloadable CC0 texture set was usable** (see ASSETS.md), so `scripts/gen-textures.ts` generates a photographic-style set at build time: heightfields from tileable noise with scattered stones / grass blades / leaves / cracks, baked cavity AO, normals from height, mean albedo calibrated to real-world values. 12 layers × albedo (1024 Ultra / 512 High) + normal/height (512), asphalt likewise. 9 MB of WebP, committed, regenerated only when the script changes.
+- **PBR splat** (`world/terrainPBR.ts`): height-based blending (stones poke through dirt), per-layer tile/roughness/normal strength, second large-scale sample far away + procedural macro variation against tiling, triplanar rock on steep slopes, mud puddles (dark, glossy, flat → mirror the sky), wet river bed, snow sparkle, wheel ruts and loose edge berms from a new per-vertex `aRoad` (road weight, lateral).
+- **Road readability fix (all levels):** new 12th layer `track` (packed hardpack). Desert road = 80 % track (was sand on sand); snowy-pass road = mostly track/gravel with a little snow + dark slush ruts on High/Ultra (was pale snow-gravel). Orange-and-black snow poles and red-topped wooden posts line both edges on the pass and through the desert. Rock on valley walls only from slope 0.8–1.25 (was 0.65–0.95) so more of the walls stay grassy.
+- **Water:** 12 columns across with per-vertex depth: clear sandy-green shallows → dark teal, opacity from depth, animated foam lines at the banks, two scrolling normal layers, sky reflections (PBR).
+
+### Props, vegetation, animals
+- Trees: trunk + branch cylinders (bark shader) and ~66 alpha-tested foliage cards per broadleaf / ~60 needle-spray cards per pine from a canvas-drawn atlas, spherical "volume" normals, darker lower/inner leaves, wind sway (vertex shader). Snowy pines use a snow-clump spray. Bushes = cards. Rocks: noise-displaced, faceted icosahedra using the terrain rock textures (triplanar). Houses: foundation, window frames, sills, shutters, door frame, porch step, fascia (both tiers). One PBR "uber" prop material keyed by a per-vertex surface id.
+- **Grass blades (Ultra):** one instanced draw of ~14k five-blade clumps in a 24 m disc ahead of the camera, wherever the course's layer weights say grass/field, refilled every 3 m, distance-faded (no popping), wind.
+- Animals keep their low-poly geometry with a fur material (sheen + strand noise); hay bales get straw fibres, cones satin plastic (`tierSwap`).
+- Particles on High/Ultra are lit puffs (lumpy outline, sphere normal with sun wrap lighting).
+
+### Cars
+- Paint: clearcoat MeshPhysicalMaterial, metalness 0.22, metallic flake normals under the coat; **dirt build-up** on the lower body from the surface driven on (mud fast, dust/sand/snow slower, colour follows the surface, water rinses some off). Glass: dark, clear-coated, Fresnel reflections. Chrome 0.08 roughness. Tyres are a separate mesh with procedural tread grooves and sidewall rings. Lamps HDR (×2.2), brake lights ×2.6 when braking (bloom). A smaller contact-shadow pad stays under each car on High/Ultra. Damage visuals untouched (dents/scratches edit geometry/vertex colours that the new paint still uses; crack decals, smoke unchanged). Spin-screen thumbnails get a RoomEnvironment on High/Ultra.
+
+### Performance (scripts/perf-stats.mjs, headless SwiftShader at the iPad's DPR 2; frame times there are meaningless)
+Draw calls per frame include shadow and post passes; GPU memory = everything allocated through WebGL (textures + render targets + vertex/index buffers), measured after driving through all zones.
+
+| Level | Pixel ratio | Draw calls (zones) | Triangles | GPU memory |
+| --- | --- | --- | --- | --- |
+| Low | 1 | 41–59 | 47–81k | 16 → 39 MB |
+| Medium | 1.25 | 85–137 | 140–201k | 30 → 69 MB |
+| High | 1.5 | 117–269 | 356–751k | 227 → 347 MB |
+| Ultra | 1.5 | 137–341 | 438k–1.06M | 368 → ~470 MB |
+
+Low/Medium draw calls match the pre-Round-2 numbers (Low farm 44 → 43–45); triangles +5–10 % (house trim, marker posts). Ultra's biggest items: shadow map 72 MB, terrain albedo array 64 MB (+16 MB normals), post targets ~100 MB, geometry up to ~150 MB once every chunk has been drawn. That is within what Safari allows a tab on the 3 GB A12 / 4 GB A10X (~1–1.5 GB), but **real iPad frame rates are unmeasured** (expect roughly 15–25 fps on Ultra on the A12; the slow prompt exists for that). Smoke still checks no texture/geometry/body growth over 5 Race Agains (on Low).

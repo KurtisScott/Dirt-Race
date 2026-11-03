@@ -36,13 +36,13 @@ WORLD=race npm run race-test   # full race rules on the real course
 - Start while loading, which must ask for tilt permission inside the tap.
 - Spin → countdown → race → results, then Race Again ×5 with checks that GPU memory and physics bodies stay flat.
 - Effects, pause and settings.
-- The quality auto-drop.
+- The quality auto-drop (opt-in Auto), the one-time "game running slow" prompt, and the Round 2 settings migration to Ultra.
 - The `?terrain=simple` fallback.
 - Offline reload from the service worker and the portrait overlay.
 
 Screenshots go to `screenshots/`.
 
-`node scripts/world-shots.mjs` (after a build; `QUALITY=low|medium|high`) takes a screenshot of every course zone plus the effects (splash, hay, confetti, the end jump) and prints draw calls and triangles.
+`node scripts/world-shots.mjs` (after a build; `QUALITY=low|medium|high|ultra`) takes a screenshot of every course zone plus the effects (splash, hay, confetti, the end jump) and prints draw calls and triangles.
 
 ## Deploy to GitHub Pages
 
@@ -68,16 +68,18 @@ The countdown beeps can be replaced by Brooks saying "3, 2, 1, GO!":
 
 ## Graphics and old iPads
 
-The game starts on **Medium** with **Auto** on. If the frame rate sags during a race, it drops a level (Medium → Low) and remembers that for next time. If it is still slow on Low, the terrain switches to a texture-free shader. On a GPU where the terrain shader fails to compile, the same fallback is used automatically and remembered, so the world is never black or pink. Parents can pick Low / Medium / High / Auto on the pause screen.
+The game starts on **Ultra** (the family chose maximum realism, accepting a lower frame rate on the old iPads). Automatic dropping is **off**: if a race stays under ~20 fps for ~10 s, a small card asks once "Game running slow — lower the graphics?" (Lower / Keep) and remembers the answer. Parents can pick Low / Med / High / Ultra / Auto on the pause screen at any time; Auto brings back the old behaviour (drops a level when slow; on Low, a texture-free terrain). On a GPU where a terrain shader fails to compile, a simpler one is used automatically, so the world is never black or pink.
 
-| | Low | Medium | High |
-| --- | --- | --- | --- |
-| Pixel ratio cap | 1 | 1.25 | 1.75 |
-| Shadows | blob shadows only | 1024² sun shadow | 2048² sun shadow |
-| View distance | 240 m | 420 m | 650 m |
-| Decoration | no grass tufts, bushes or small rocks | most | all |
-| Terrain | lite splat (1 fetch fewer) | full splat | full splat (512² layers) |
-| MSAA | off | off | on (after a restart) |
+| | Low | Medium | High | Ultra |
+| --- | --- | --- | --- | --- |
+| Look | original low-poly | original low-poly | realistic (PBR + sky lighting) | realistic, everything on |
+| Pixel ratio cap | 1 | 1.25 | 1.5 | 1.5 |
+| Shadows | blob shadows only | 1024² sun shadow | 2048² soft, fitted ahead of the car | 3072² soft, fitted |
+| View distance | 240 m | 420 m | 700 m | 900 m |
+| Terrain | lite splat | full splat | photographic textures 512 px | photographic textures 1024 px |
+| Trees / grass | low-poly | low-poly | leafy trees with wind | + grass blades around the car |
+| Post-processing | none | none | bloom, grade, SMAA | + ambient occlusion, speed blur |
+| GPU memory (measured) | ~40 MB | ~70 MB | ~350 MB | ~470 MB |
 
 ## Project layout
 

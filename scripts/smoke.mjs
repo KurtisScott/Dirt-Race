@@ -15,6 +15,7 @@ const types = {
   '.js': 'text/javascript',
   '.css': 'text/css',
   '.png': 'image/png',
+  '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
   '.webmanifest': 'application/manifest+json',
   '.json': 'application/json',
@@ -59,7 +60,7 @@ const page = await browser.newPage({
 const QUALITY = process.env.QUALITY ?? 'low';
 await page.addInitScript((q) => {
   try {
-    localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: q, autoQuality: false }));
+    localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: q, autoQuality: false, qualityVersion: 2 }));
   } catch {}
 }, QUALITY);
 const errors = [];
@@ -230,7 +231,8 @@ const jumpEvt = await page
     () => null,
   );
 await page.keyboard.up('ArrowUp');
-check(!!jumpEvt && jumpEvt.finished && jumpEvt.stage === 'done' && (jumpEvt.jumpM ?? 0) > 30, `end jump: ${jumpEvt?.jumpM} m, bonus ${jumpEvt?.jumpBonus}, crashed ${jumpEvt?.jumpCrashed}`);
+check(!!jumpEvt && jumpEvt.finished && jumpEvt.stage === 'done' && (jumpEvt.jumpM ?? 0) > 15, // the random pick may be the sedan (~25 m) or the tractor (~20 m)
+   `end jump: ${jumpEvt?.jumpM} m, bonus ${jumpEvt?.jumpBonus}, crashed ${jumpEvt?.jumpCrashed}`);
 await page.screenshot({ path: join(shots, 'race-jump.png') });
 // Don't wait for the computer's 5 km: shorten the clock → results.
 await page.evaluate(() => {
@@ -316,6 +318,33 @@ const last = mems[mems.length - 1];
 const flat = (k, slack) => Math.max(...mems.map((m) => m[k])) - Math.min(...mems.map((m) => m[k])) <= slack;
 check(flat('tex', 2) && flat('bodies', 0) && flat('colliders', 0) && flat('scene', 0) && last.geo - first.geo <= 12 && flat('geo', 24), 'no leak over 5 Race Agains (textures, geometries, bodies, scene objects flat)');
 
+// Round 2: with Auto off (the default) slow frames never drop quality by themselves; after ~10 s under
+// ~20 fps a one-time prompt asks. Lower → one level down, remembered; never asked again.
+await page.keyboard.press('KeyP');
+await page.click('[data-seg="quality"] [data-v="medium"]');
+await page.click('[data-tap="resume"]');
+const prompt = await page.evaluate(() => {
+  const q = window.__dirt.quality;
+  q.setMonitoring(true);
+  let t = performance.now() + 5000;
+  for (let i = 0; i < 6 * 16; i++) q.sample(62, (t += 62)); // ~6 s slow: not yet
+  const early = !document.querySelector('.slow-prompt').hidden;
+  for (let i = 0; i < 6 * 16; i++) q.sample(62, (t += 62)); // ~12 s slow
+  return { early, shown: !document.querySelector('.slow-prompt').hidden, level: q.preset.level, drops: q.autoDrops };
+});
+check(!prompt.early && prompt.shown && prompt.level === 'medium' && prompt.drops === 0, `slow frames (Auto off) keep the level and show the one-time prompt after ~10 s (early ${prompt.early}, shown ${prompt.shown}, level ${prompt.level})`);
+await page.screenshot({ path: join(shots, 'r2g-slow-prompt.png') });
+await page.click('[data-tap="slow-lower"]');
+const lowered = await page.evaluate(() => {
+  const q = window.__dirt.quality;
+  const s = JSON.parse(localStorage.getItem('dirtrace.settings.v1'));
+  q.promptRaised = false; // a new session would start fresh: the saved answer alone must stop it
+  let t = performance.now() + 5000;
+  for (let i = 0; i < 20 * 16; i++) q.sample(62, (t += 62));
+  return { level: q.preset.level, stored: s.quality, answer: s.slowPrompt, again: !document.querySelector('.slow-prompt').hidden };
+});
+check(lowered.level === 'low' && lowered.stored === 'low' && lowered.answer === 'lowered' && !lowered.again, `prompt "Lower" → ${lowered.level} (saved ${lowered.stored}, answer ${lowered.answer}), never asked again`);
+
 // Quality auto-drop: slow frames while driving drop a level and persist it. Start from Medium with Auto
 // on (via the settings screen, like a parent would), then feed the monitor 40 ms frames.
 await page.keyboard.press('KeyP');
@@ -391,7 +420,7 @@ check(worldInfo.zones === 'town,farm,mud,rocky,forest,canyon,snow,desert,river,f
   const g = await browser.newPage({ viewport: { width: 1112, height: 834 }, deviceScaleFactor: 1 });
   await g.addInitScript(() => {
     try {
-      localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: 'low', autoQuality: false, seenRotationTip: true }));
+      localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: 'low', autoQuality: false, qualityVersion: 2, seenRotationTip: true }));
     } catch {}
     window.__perm = { calls: 0, inGesture: false };
     let inClick = false;
@@ -421,12 +450,34 @@ check(worldInfo.zones === 'town,farm,mud,rocky,forest,canyon,snow,desert,river,f
   await g.close();
 }
 
+// Round 2 settings migration: saved settings from before (no qualityVersion) move to Ultra once with Auto
+// off; the default for a fresh install is Ultra too.
+{
+  const mg = await browser.newPage({ viewport: { width: 1112, height: 834 }, deviceScaleFactor: 1 });
+  await mg.addInitScript(() => {
+    globalThis.__dirtHold = true;
+    if (sessionStorage.getItem('seeded')) return;
+    sessionStorage.setItem('seeded', '1');
+    localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: 'medium', autoQuality: true, sensitivity: 'high', seenRotationTip: true }));
+  });
+  await mg.goto(`http://localhost:${PORT}/dirt-race/`, { waitUntil: 'load' });
+  await mg.waitForSelector('[data-screen="title"]:not([hidden])', { timeout: 60000 });
+  const m1 = await mg.evaluate(() => JSON.parse(localStorage.getItem('dirtrace.settings.v1')));
+  // A later choice (Low) is respected after a reload.
+  await mg.evaluate(() => localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ ...JSON.parse(localStorage.getItem('dirtrace.settings.v1')), quality: 'low' })));
+  await mg.reload({ waitUntil: 'load' });
+  await mg.waitForSelector('[data-screen="title"]:not([hidden])', { timeout: 60000 });
+  const m2 = await mg.evaluate(() => JSON.parse(localStorage.getItem('dirtrace.settings.v1')));
+  check(m1.quality === 'ultra' && m1.autoQuality === false && m1.qualityVersion === 2 && m1.sensitivity === 'high' && m2.quality === 'low', `old settings migrate to Ultra once (got ${m1.quality}, auto ${m1.autoQuality}, other settings kept), later choice kept (${m2.quality})`);
+  await mg.close();
+}
+
 // Forced fallback terrain (?terrain=simple) boots and renders without errors, never a black/pink world.
 {
   const fb = await browser.newPage({ viewport: { width: 1112, height: 834 }, deviceScaleFactor: 1 });
   await fb.addInitScript(() => {
     try {
-      localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: 'low', autoQuality: false, seenRotationTip: true }));
+      localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: 'low', autoQuality: false, qualityVersion: 2, seenRotationTip: true }));
     } catch {}
   });
   const fbErr = [];
@@ -440,9 +491,14 @@ check(worldInfo.zones === 'town,farm,mud,rocky,forest,canyon,snow,desert,river,f
     const gl = d.renderer.renderer.getContext();
     const w = gl.drawingBufferWidth;
     const h = gl.drawingBufferHeight;
-    const buf = new Uint8Array(4);
-    gl.readPixels(Math.floor(w / 2), Math.floor(h * 0.15), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-    return { shading: d.world.terrainShading, ground: [...buf], errors: d.renderer.shaderErrors };
+    // Brightest of a few ground pixels (the title camera orbits: one sample may land on a car or the road).
+    let best = [0, 0, 0, 0];
+    for (const fx of [0.08, 0.2, 0.8, 0.92]) {
+      const buf = new Uint8Array(4);
+      gl.readPixels(Math.floor(w * fx), Math.floor(h * 0.3), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      if (buf[0] + buf[1] + buf[2] > best[0] + best[1] + best[2]) best = [...buf];
+    }
+    return { shading: d.world.terrainShading, ground: best, errors: d.renderer.shaderErrors };
   });
   const [r, g, b] = px.ground;
   const sane = r + g + b > 60 && !(r > 200 && b > 200 && g < 80);

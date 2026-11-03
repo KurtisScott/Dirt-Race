@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../dist/', import.meta.url));
 const shots = fileURLToPath(new URL('../screenshots/', import.meta.url));
-const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.json': 'application/json' };
+const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.json': 'application/json' };
 const PORT = Number(process.env.PORT ?? 4183);
 const PREFIX = process.env.PREFIX ?? 'world-';
 const server = createServer(async (req, res) => {
@@ -35,9 +35,10 @@ const executablePath = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/
 const browser = await chromium.launch({ executablePath, headless: true, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--no-sandbox'] });
 const page = await browser.newPage({ viewport: { width: 1112, height: 834 }, deviceScaleFactor: 1 });
 const QUALITY = process.env.QUALITY ?? 'medium';
+await page.addInitScript(() => (globalThis.__dirtHold = true));
 await page.addInitScript((q) => {
   try {
-    localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: q, autoQuality: false }));
+    localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: q, autoQuality: false, qualityVersion: 2 }));
   } catch {}
 }, QUALITY);
 const errors = [];
@@ -51,6 +52,8 @@ const t0 = Date.now();
 await page.goto(`http://localhost:${PORT}/dirt-race/${process.env.LEVEL ? `?level=${process.env.LEVEL}` : ''}`, { waitUntil: 'load' });
 await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 120000 });
 console.log(`  load → ready ${((Date.now() - t0) / 1000).toFixed(1)} s (headless swiftshader)`);
+// Software GL is very slow with the High/Ultra post chain: only render the frames that get screenshotted.
+await page.evaluate(() => (window.__dirt.renderer.hold = true));
 await page.click('[data-tap="start"]');
 await page.waitForTimeout(1500);
 await page.click('[data-tap="ready"]');
@@ -66,14 +69,22 @@ const simWait = async (seconds) => {
   await page.waitForFunction((t) => window.__dirt.loop.simTime >= t, start + seconds, { timeout: 180000, polling: 100 });
 };
 const stats = [];
+const renderFrames = async (n = 2) => {
+  await page.evaluate(async (n) => {
+    window.__dirt.renderer.hold = false;
+    for (let i = 0; i < n; i++) await new Promise((r) => requestAnimationFrame(r));
+  }, n);
+};
 const snap = async (name) => {
   await page.waitForTimeout(300);
+  await renderFrames(2);
   const info = await page.evaluate(() => {
     const d = window.__dirt;
     const p = d.player;
     return { calls: d.renderer.renderer.info.render.calls, tris: d.renderer.renderer.info.render.triangles, surf: p.surface, speed: p.speed };
   });
   await page.screenshot({ path: join(shots, `${PREFIX}${name}.png`) });
+  await page.evaluate(() => (window.__dirt.renderer.hold = true));
   stats.push({ name, ...info });
   console.log(`  ${name.padEnd(14)} drawCalls=${String(info.calls).padStart(3)} tris=${(info.tris / 1000).toFixed(0).padStart(4)}k surface=${info.surf} speed=${(info.speed * 3.6).toFixed(0)} km/h`);
 };
