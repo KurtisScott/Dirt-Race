@@ -58,7 +58,7 @@ const hold = () => page.evaluate(() => (window.__dirt.renderer.hold = true));
 const snap = async (name) => {
   await renderFrames(2);
   const info = await page.evaluate(() => ({ calls: window.__dirt.renderer.renderer.info.render.calls, tris: window.__dirt.renderer.renderer.info.render.triangles }));
-  await page.screenshot({ path: join(shots, `${PREFIX}${name}.png`) });
+  await page.screenshot({ path: join(shots, `${PREFIX}${name}.png`), timeout: 180000 });
   await hold();
   console.log(`  ${name.padEnd(20)} drawCalls=${info.calls} tris=${(info.tris / 1000).toFixed(0)}k`);
 };
@@ -81,7 +81,7 @@ await page.click('[data-tap="ready"]');
 await page.waitForSelector('.vspin-go.ready', { timeout: 120000 });
 if (SHOTS.includes('spin')) {
   await page.waitForTimeout(1200);
-  await page.screenshot({ path: join(shots, `${PREFIX}spin.png`) });
+  await page.screenshot({ path: join(shots, `${PREFIX}spin.png`), timeout: 180000 });
   console.log('  spin');
 }
 await page.click('[data-tap="spin-go"]', { force: true });

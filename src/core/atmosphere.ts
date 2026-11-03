@@ -19,7 +19,9 @@ export const ATMOS = {
   zenith: new THREE.Color(0x2f78cf),
   horizon: new THREE.Color(0xc9dcea),
   haze: new THREE.Color(0xffe2bb), // warm Mie glow around the sun
-  ground: new THREE.Color(0x4a4a42), // below the horizon (env map only: what the ground bounces)
+  // Below the horizon (env map only: what the sunlit grass/dirt bounces). Warm and fairly bright, or
+  // walls and cars in shade see only the blue sky and turn lavender.
+  ground: new THREE.Color(0x7c7656),
   sun: new THREE.Color(0xfff1dc),
 };
 

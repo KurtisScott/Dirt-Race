@@ -281,7 +281,9 @@ export function pineHQ(variant: number, snowy: boolean): { wood: Template; leave
   const ax = new THREE.Vector3();
   const ay = new THREE.Vector3();
   const tint = new THREE.Color();
-  const base = snowy ? 0xc4d4c8 : [0x6a9a5a, 0x76a462, 0x628e55, 0x7cab66][variant % 4];
+  // The needle atlas is dark (real conifer albedo ≈ 0.05–0.08): the tint must stay bright or pines read as
+  // black silhouettes under the sky light.
+  const base = snowy ? 0xc4d4c8 : [0xc6e2b0, 0xd0e8b8, 0xbcdba6, 0xd8eec4][variant % 4];
   const crown = new THREE.Vector3(0, H * 0.55, 0);
   const tiers = 9;
   let k = 0;

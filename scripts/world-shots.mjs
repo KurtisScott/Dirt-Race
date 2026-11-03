@@ -83,7 +83,7 @@ const snap = async (name) => {
     const p = d.player;
     return { calls: d.renderer.renderer.info.render.calls, tris: d.renderer.renderer.info.render.triangles, surf: p.surface, speed: p.speed };
   });
-  await page.screenshot({ path: join(shots, `${PREFIX}${name}.png`) });
+  await page.screenshot({ path: join(shots, `${PREFIX}${name}.png`), timeout: 180000 });
   await page.evaluate(() => (window.__dirt.renderer.hold = true));
   stats.push({ name, ...info });
   console.log(`  ${name.padEnd(14)} drawCalls=${String(info.calls).padStart(3)} tris=${(info.tris / 1000).toFixed(0).padStart(4)}k surface=${info.surf} speed=${(info.speed * 3.6).toFixed(0)} km/h`);

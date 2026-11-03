@@ -120,6 +120,11 @@ export function makeTerrainPBRMaterial(set: PBRSet): THREE.MeshStandardMaterial 
                 vec3 a2 = texture(uAlb, vec3(uv * 0.27 + vec2(0.37, 0.71), fi)).rgb;
                 a = mix(a, a2, farK * 0.6);
               }
+              // Patches inside a texture tile (dry grass, damp dirt) line up in rows a few tiles away:
+              // fade toward the layer's mean colour (smallest mip) there; the macro variation below takes over.
+              // Gravel is also calmed near the car (salt-and-pepper pebbles shimmer on a moving camera).
+              float tFlat = smoothstep(7.0, 40.0, dist) * 0.62 + (i == 2 ? 0.3 : 0.0);
+              if (tFlat > 0.0) a = mix(a, textureLod(uAlb, vec3(0.5, 0.5, fi), 12.0).rgb, tFlat);
               NW[i] = tPerturb(nh, N, T, B, NSTR[i] * nFade);
             }
             A[i] = a;
@@ -139,7 +144,11 @@ export function makeTerrainPBRMaterial(set: PBRSet): THREE.MeshStandardMaterial 
             if (i == 3) {
               // Mud: puddles in the low spots — dark, glossy, flat (they mirror the sky).
               float hh = clamp((S[i] - W[i] * 1.6) / 0.55, 0.0, 1.0);
-              float pud = smoothstep(0.42, 0.3, hh) * (0.6 + 0.4 * tvn(vTPos.xz * 0.35));
+              // The water line wanders with a slow world-space noise so the puddles don't repeat with the
+              // texture tile: dry stretches, scattered puddles and a few big pools.
+              float wl = 0.04 + 0.4 * tvn(vTPos.xz * 0.045 + 3.1) + 0.1 * tvn(vTPos.xz * 0.13);
+              hh += (tvn(vTPos.xz * 0.7 + 1.7) - 0.5) * 0.22; // ragged shorelines, not the tile's shapes
+              float pud = smoothstep(wl + 0.08, wl - 0.02, hh) * (0.65 + 0.35 * tvn(vTPos.xz * 0.35));
               a *= mix(1.0, 0.42, pud);
               r = mix(r, 0.05, pud);
               nw = normalize(mix(nw, N, pud));
