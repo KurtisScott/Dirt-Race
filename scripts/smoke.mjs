@@ -224,12 +224,42 @@ await page.evaluate(() => {
   d.player.reset(d.world.data.spawnAt(d.world.track.finishS - 120, 0));
 });
 await page.keyboard.down('ArrowUp');
-const jumpEvt = await page
-  .waitForFunction(() => window.__dirt.race.progress.player.jump === 'done', null, { timeout: 300000, polling: 100 })
-  .then(
-    () => page.evaluate(() => ({ ...window.__dirt.race.progress.player })),
-    () => null,
-  );
+// Steer along the road with the arrow keys like a player would (holding straight on lets a low-grip car
+// drift off the curving run-up into the fence). Software GL runs the sim ~5–10× slower than real time,
+// so the deadline is generous and the loop ends on the game's own state.
+let jumpEvt = null;
+{
+  let held = null;
+  const deadline = Date.now() + 900000;
+  while (Date.now() < deadline) {
+    const st = await page.evaluate(() => {
+      const d = window.__dirt;
+      const p = d.race.progress.player;
+      if (p.jump === 'done' || p.stage === 'done') return { done: true };
+      const v = d.player;
+      const tr = d.world.track;
+      const t = v.position.clone();
+      tr.pointAt(Math.min(tr.length, p.s + 7 + Math.max(0, v.speed) * 0.55), t);
+      const dx = t.x - v.position.x;
+      const dz = t.z - v.position.z;
+      const f = v.forward;
+      return { done: false, steer: -Math.atan2(f.z * dx - f.x * dz, f.x * dx + f.z * dz) * 2.2 };
+    });
+    if (st.done) break;
+    const want = st.steer > 0.12 ? 'ArrowRight' : st.steer < -0.12 ? 'ArrowLeft' : null;
+    if (want !== held) {
+      if (held) await page.keyboard.up(held);
+      if (want) await page.keyboard.down(want);
+      held = want;
+    }
+    await page.waitForTimeout(120);
+  }
+  if (held) await page.keyboard.up(held);
+  jumpEvt = await page.evaluate(() => {
+    const p = window.__dirt.race.progress.player;
+    return p.jump === 'done' ? { ...p } : null;
+  });
+}
 await page.keyboard.up('ArrowUp');
 check(!!jumpEvt && jumpEvt.finished && jumpEvt.stage === 'done' && (jumpEvt.jumpM ?? 0) > 15, // the random pick may be the sedan (~25 m) or the tractor (~20 m)
    `end jump: ${jumpEvt?.jumpM} m, bonus ${jumpEvt?.jumpBonus}, crashed ${jumpEvt?.jumpCrashed}`);
@@ -402,7 +432,7 @@ const touch = await browser.newContext({
   isMobile: true,
 });
 const tp = await touch.newPage();
-await tp.goto(`http://localhost:${PORT}/dirt-race/`);
+await tp.goto(`http://localhost:${PORT}/dirt-race/`, { timeout: 120000 }); // slow under software GL while the first page still renders
 await tp.waitForTimeout(1500);
 check(await tp.isVisible('#rotate'), 'portrait (touch) shows rotate overlay');
 await touch.close();
@@ -460,7 +490,7 @@ check(worldInfo.zones === 'town,farm,mud,rocky,forest,canyon,snow,desert,river,f
     sessionStorage.setItem('seeded', '1');
     localStorage.setItem('dirtrace.settings.v1', JSON.stringify({ quality: 'medium', autoQuality: true, sensitivity: 'high', seenRotationTip: true }));
   });
-  await mg.goto(`http://localhost:${PORT}/dirt-race/`, { waitUntil: 'load' });
+  await mg.goto(`http://localhost:${PORT}/dirt-race/`, { waitUntil: 'load', timeout: 120000 });
   await mg.waitForSelector('[data-screen="title"]:not([hidden])', { timeout: 60000 });
   const m1 = await mg.evaluate(() => JSON.parse(localStorage.getItem('dirtrace.settings.v1')));
   // A later choice (Low) is respected after a reload.
@@ -482,7 +512,7 @@ check(worldInfo.zones === 'town,farm,mud,rocky,forest,canyon,snow,desert,river,f
   });
   const fbErr = [];
   fb.on('pageerror', (e) => fbErr.push(String(e)));
-  await fb.goto(`http://localhost:${PORT}/dirt-race/?terrain=simple`, { waitUntil: 'load' });
+  await fb.goto(`http://localhost:${PORT}/dirt-race/?terrain=simple`, { waitUntil: 'load', timeout: 120000 });
   await fb.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 60000 });
   await fb.waitForTimeout(800);
   const px = await fb.evaluate(() => {
