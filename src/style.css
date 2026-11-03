@@ -588,6 +588,41 @@ h2 {
   pointer-events: none !important;
 }
 
+/* Round 2: one-time "game running slow" prompt (doesn't pause the race). */
+.slow-prompt {
+  position: absolute;
+  left: 50%;
+  top: calc(150px + var(--safe-t));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(20, 30, 45, 0.9);
+  color: white;
+  padding: 10px 12px 10px 18px;
+  border-radius: 16px;
+  font-size: 18px;
+  font-weight: 700;
+  z-index: 30;
+  white-space: nowrap;
+}
+.slow-prompt[hidden] {
+  display: none;
+}
+.slow-prompt button {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-weight: 800;
+  font-size: 18px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.slow-prompt button[data-tap='slow-lower'] {
+  background: #ff9a2e;
+  color: white;
+}
+
 /* ---------- touch controls ---------- */
 .touch-controls {
   position: absolute;
@@ -1133,7 +1168,8 @@ h2 {
   padding: 22px 36px !important;
 }
 .pause-screen .seg button {
-  padding: 8px 14px;
+  padding: 8px 12px;
+  min-width: 62px;
 }
 .screen > .row,
 .screen > .results-row,

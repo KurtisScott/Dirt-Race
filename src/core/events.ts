@@ -65,6 +65,8 @@ export interface GameEvents {
   'quality:changed': { level: QualityLevel; auto: boolean };
   /** Frames are still slow at the lowest quality level (world drops to its cheapest terrain shader). */
   'quality:slow': Record<string, never>;
+  /** Round 2: frames stayed under ~20 fps for ~10 s while racing with auto-quality off (UI asks once). */
+  'quality:prompt': { fps: number; suggest: QualityLevel };
   'settings:changed': Record<string, never>;
   'tilt:status': { status: TiltStatus };
   'app:paused': { paused: boolean };

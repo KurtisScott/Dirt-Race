@@ -20,6 +20,19 @@ export interface QualityPreset {
   detail: number;
   /** Max texture size for procedural textures (world reads this). */
   textureSize: number;
+  // ---- Round 2 realism knobs (High/Ultra). Low/Medium keep the original lightweight look.
+  /** Physically based materials everywhere + sky image-based lighting (PMREM). False → Lambert look. */
+  pbr: boolean;
+  /** Post-processing chain: none (direct to screen), light (bloom + grade), full (+ AO, speed blur, SMAA). */
+  post: 'none' | 'light' | 'full';
+  /** Soft-shadow filter radius in shadow-map texels (PCF). */
+  shadowRadius: number;
+  /** Resolution of the photographic PBR terrain set (albedo + normal/roughness/height); 0 = procedural layers. */
+  terrainPBR: 0 | 512 | 1024;
+  /** Instanced grass blades around the camera (count; 0 = off). */
+  grass: number;
+  /** Layered foliage cards with wind sway instead of solid low-poly crowns. */
+  foliageCards: boolean;
 }
 
 export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
@@ -34,6 +47,12 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     antialias: false,
     detail: 0.4,
     textureSize: 256,
+    pbr: false,
+    post: 'none',
+    shadowRadius: 1,
+    terrainPBR: 0,
+    grass: 0,
+    foliageCards: false,
   },
   medium: {
     level: 'medium',
@@ -46,26 +65,59 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     antialias: false,
     detail: 0.7,
     textureSize: 512,
+    pbr: false,
+    post: 'none',
+    shadowRadius: 1,
+    terrainPBR: 0,
+    grass: 0,
+    foliageCards: false,
   },
   high: {
     level: 'high',
-    pixelRatioCap: 1.75,
+    pixelRatioCap: 1.5,
     shadows: true,
     shadowMapSize: 2048,
     shadowRange: 45,
-    viewDistance: 650,
-    fogNear: 250,
+    viewDistance: 700,
+    fogNear: 190,
     antialias: true,
     detail: 1,
     textureSize: 1024,
+    pbr: true,
+    post: 'light',
+    shadowRadius: 2,
+    terrainPBR: 512,
+    grass: 0,
+    foliageCards: true,
+  },
+  /** Round 2 default on every device: max realism, accepting a lower frame rate on the old iPads. */
+  ultra: {
+    level: 'ultra',
+    pixelRatioCap: 1.5,
+    shadows: true,
+    shadowMapSize: 4096,
+    shadowRange: 60,
+    viewDistance: 900,
+    fogNear: 200,
+    antialias: false, // SMAA in the post chain instead
+    detail: 1,
+    textureSize: 1024,
+    pbr: true,
+    post: 'full',
+    shadowRadius: 3,
+    terrainPBR: 1024,
+    grass: 14000,
+    foliageCards: true,
   },
 };
 
-const ORDER: QualityLevel[] = ['low', 'medium', 'high'];
+export const QUALITY_ORDER: QualityLevel[] = ['low', 'medium', 'high', 'ultra'];
+const ORDER = QUALITY_ORDER;
 
 /**
- * Holds the active preset and watches frame times. If the average frame time
- * stays above the budget it drops one level (never auto-raises, to avoid flip-flopping).
+ * Holds the active preset and watches frame times. With `settings.autoQuality` (opt-in "Auto" in Settings)
+ * it drops one level when the average frame time stays above the budget (never auto-raises). Otherwise
+ * (the Round 2 default) it only raises `quality:prompt` once when racing stays under ~20 fps for ~10 s.
  * Listen to 'quality:changed' to re-apply settings in your module.
  */
 export class QualityManager {
@@ -93,9 +145,24 @@ export class QualityManager {
   private slowEmitted = false;
   static readonly SLOW_WINDOWS = 3;
   static readonly WARMUP_MS = 4000;
+  /** Prompt threshold (auto-quality off): average frame above this (≈ 20 fps)… */
+  static readonly PROMPT_MS = 50;
+  /** …for this many consecutive 1 s windows of racing. */
+  static readonly PROMPT_WINDOWS = 10;
+  private promptWindows = 0;
+  private promptFrameSum = 0;
+  /** The prompt has been raised this session (it is asked at most once ever: settings.slowPrompt). */
+  promptRaised = false;
 
   constructor() {
-    this.preset = QUALITY_PRESETS[settings.quality] ?? QUALITY_PRESETS.medium;
+    this.preset = QUALITY_PRESETS[settings.quality] ?? QUALITY_PRESETS.ultra;
+  }
+
+  /** Level one step down (or two when very slow), for the slow prompt. */
+  suggestLower(avgMs: number): QualityLevel {
+    const i = ORDER.indexOf(this.preset.level);
+    const steps = avgMs > 75 && i >= 2 ? 2 : 1;
+    return ORDER[Math.max(0, i - steps)];
   }
 
   /** Change level. `auto` = chosen by the frame-time monitor (persisted too, so the next launch starts there). */
@@ -118,6 +185,8 @@ export class QualityManager {
     this.windowCount = 0;
     this.windowStart = performance.now();
     this.slowWindows = 0;
+    this.promptWindows = 0;
+    this.promptFrameSum = 0;
     this.warmupUntil = performance.now() + QualityManager.WARMUP_MS;
   }
 
@@ -125,7 +194,7 @@ export class QualityManager {
   sample(frameMs: number, now: number): void {
     if (frameMs > 250) return; // tab switch / GC hiccup: ignore
     this.avgFrameMs += (frameMs - this.avgFrameMs) * 0.05;
-    if (!this.enabled || !settings.autoQuality || now < this.warmupUntil) return;
+    if (!this.enabled || now < this.warmupUntil) return;
     this.windowSum += frameMs;
     this.windowCount++;
     if (now - this.windowStart < 1000) return;
@@ -134,6 +203,24 @@ export class QualityManager {
     this.windowCount = 0;
     this.windowStart = now;
     const i = ORDER.indexOf(this.preset.level);
+    if (!settings.autoQuality) {
+      // Round 2: never drop by itself. If it stays under ~20 fps for ~10 s, ask once (UI shows the prompt).
+      if (i === 0 || settings.slowPrompt !== 'unasked' || this.promptRaised) return;
+      if (avg > QualityManager.PROMPT_MS) {
+        this.promptWindows++;
+        this.promptFrameSum += avg;
+      } else {
+        this.promptWindows = 0;
+        this.promptFrameSum = 0;
+      }
+      if (this.promptWindows >= QualityManager.PROMPT_WINDOWS) {
+        const mean = this.promptFrameSum / this.promptWindows;
+        this.promptRaised = true;
+        console.info(`[quality] avg frame ${mean.toFixed(1)} ms for ${this.promptWindows} s → asking to lower graphics`);
+        events.emit('quality:prompt', { fps: Math.round(1000 / mean), suggest: this.suggestLower(mean) });
+      }
+      return;
+    }
     const budget = i > 0 ? QualityManager.BUDGET_MS : QualityManager.LOW_FLOOR_MS;
     this.slowWindows = avg > budget ? this.slowWindows + 1 : 0;
     if (this.slowWindows >= QualityManager.SLOW_WINDOWS) {

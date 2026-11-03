@@ -75,7 +75,7 @@ export interface SpawnPoint {
   yaw: number;
 }
 
-export type QualityLevel = 'low' | 'medium' | 'high';
+export type QualityLevel = 'low' | 'medium' | 'high' | 'ultra';
 export type Sensitivity = 'low' | 'medium' | 'high';
 export type Difficulty = 'easy' | 'normal' | 'hard';
 export type CameraMode = 'close' | 'far';

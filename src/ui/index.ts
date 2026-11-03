@@ -8,6 +8,8 @@ export { Screen, h, onTap } from './screens';
 export { RaceHud, ResultsScreen, RACER_NAME, formatClock, formatDistance, type HudTrack } from './raceHud';
 export { DamageMeter, damageColor } from './damageMeter';
 
+const QUALITY_NAMES: Record<QualityLevel, string> = { low: 'Low', medium: 'Medium', high: 'High', ultra: 'Ultra' };
+
 export type ScreenName = 'title' | 'calibrate' | 'pause' | 'help' | 'results';
 
 /** Callbacks main.ts provides. UI never touches physics/vehicles directly. */
@@ -95,6 +97,9 @@ export class UI {
   readonly results: ResultsScreen;
   private toastEl: HTMLDivElement;
   private toastTimer = 0;
+  private slowEl: HTMLDivElement;
+  private slowTimer = 0;
+  private slowSuggest: QualityLevel = 'high';
   private helpReturn: ScreenName = 'title';
   private courseLoaded = false;
   /** Developer stats on the pause screen, only with `?debug=1` (never shown to a kid). */
@@ -179,7 +184,7 @@ export class UI {
            </div>
            <span>Graphics</span>
            <div class="seg" data-seg="quality">
-             <button data-v="low">Low</button><button data-v="medium">Med</button><button data-v="high">High</button><button data-v="auto">Auto</button>
+             <button data-v="low">Low</button><button data-v="medium">Med</button><button data-v="high">High</button><button data-v="ultra">Ultra</button><button data-v="auto">Auto</button>
            </div>
            <span>Speed in</span>
            <div class="seg" data-seg="speedUnit">
@@ -206,8 +211,16 @@ export class UI {
     this.toastEl.hidden = true;
     root.appendChild(this.toastEl);
 
+    this.slowEl = document.createElement('div');
+    this.slowEl.className = 'slow-prompt';
+    this.slowEl.hidden = true;
+    this.slowEl.innerHTML = `<span>🐢 Game running slow — lower the graphics?</span>
+      <button data-tap="slow-lower">Lower</button><button data-tap="slow-keep">Keep</button>`;
+    root.appendChild(this.slowEl);
+
     this.bind();
     events.on('settings:changed', () => this.refreshSegments());
+    events.on('quality:prompt', ({ suggest }) => this.showSlowPrompt(suggest));
     events.on('quality:changed', ({ level, auto }) => {
       this.refreshSegments();
       if (auto) this.toast(`Graphics lowered to ${level} for smoother driving`);
@@ -248,6 +261,16 @@ export class UI {
       updateSettings({ seenRotationTip: true });
       this.title.q('[data-role="tip"]').hidden = true;
     });
+    onTap(this.slowEl.querySelector('[data-tap="slow-lower"]')!, () => {
+      this.hideSlowPrompt();
+      updateSettings({ slowPrompt: 'lowered', autoQuality: false });
+      this.handlers.onQuality(this.slowSuggest);
+      this.toast(`Graphics set to ${QUALITY_NAMES[this.slowSuggest]} (change it any time in Settings)`, 3500);
+    });
+    onTap(this.slowEl.querySelector('[data-tap="slow-keep"]')!, () => {
+      this.hideSlowPrompt();
+      updateSettings({ slowPrompt: 'kept' });
+    });
     onTap(this.pause.q('[data-tap="resume"]'), () => this.handlers.onResume());
     onTap(this.pause.q('[data-tap="recal"]'), () => this.handlers.onRecalibrate());
     onTap(this.pause.q('[data-tap="menu"]'), () => this.handlers.onMenu());
@@ -262,6 +285,7 @@ export class UI {
             updateSettings({ tiltInvert: v === 'flipped' });
             this.toast(v === 'flipped' ? 'Tilt flipped: tip right to steer left' : 'Tilt normal: tip right to steer right');
           } else if (kind === 'quality') {
+            this.hideSlowPrompt();
             if (v === 'auto') {
               updateSettings({ autoQuality: true });
               this.toast('Graphics: automatic (lowers itself if the game gets slow)');
@@ -269,6 +293,7 @@ export class UI {
               updateSettings({ autoQuality: false });
               this.handlers.onQuality(v as QualityLevel);
               if (v === 'high') this.toast('High graphics: smoothest edges after the game restarts');
+              if (v === 'ultra') this.toast('Ultra graphics: the most realistic look (may be slower)');
             }
           } else if (kind === 'steer') updateSettings({ steerButtons: v === 'buttons' });
           else if (kind === 'difficulty') {
@@ -295,6 +320,24 @@ export class UI {
     for (const seg of this.pause.el.querySelectorAll<HTMLElement>('[data-seg]')) {
       for (const b of seg.querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', current[seg.dataset.seg!]?.includes(b.dataset.v!) ?? false);
     }
+  }
+
+  /**
+   * The one-time "game running slow" prompt (Round 2): a small card under the timer that doesn't pause the
+   * race. Lower → `suggest`; Keep → never ask again. Unanswered, it hides after 20 s and is not asked again
+   * this session (the quality manager only raises it once per session).
+   */
+  private showSlowPrompt(suggest: QualityLevel): void {
+    if (settings.slowPrompt !== 'unasked') return;
+    this.slowSuggest = suggest;
+    this.slowEl.hidden = false;
+    clearTimeout(this.slowTimer);
+    this.slowTimer = window.setTimeout(() => this.hideSlowPrompt(), 20000);
+  }
+
+  private hideSlowPrompt(): void {
+    clearTimeout(this.slowTimer);
+    this.slowEl.hidden = true;
   }
 
   /** Title-screen loading bar (0..1) and a friendly label. At 1 the bar hides and Start glows. */
