@@ -107,7 +107,7 @@ export class RaceHud implements System {
       else if (winner) this.message('Computer finished first', 'bad', 2500);
     });
     events.on('race:jump', ({ racer, distanceM, bonus, crashed }) => {
-      const d = formatDistance(distanceM);
+      const d = formatDistance(distanceM, 'kmh'); // metres, like the landing-zone signs
       if (racer === 'player') {
         if (bonus) this.message(`${d} JUMP! +1 BONUS`, 'gold', 3200);
         else if (crashed) this.message(`Crash landing! (${d}) No bonus`, 'bad', 2800);
@@ -292,10 +292,10 @@ export class ResultsScreen {
 /** Results line for the end jump: distance, and whether it earned the bonus. */
 function jumpLine(r: RaceResults['racers'][number], bonusM?: number): string {
   if (r.jumpM === null || r.jumpM === undefined) return r.finished ? 'No jump' : '&nbsp;';
-  const d = formatDistance(r.jumpM);
+  const d = formatDistance(r.jumpM, 'kmh'); // metres, like the landing-zone signs
   if (r.bonus) return `⭐ ${d} jump: bonus!`;
   if (r.jumpCrashed) return `💥 ${d} jump (crash landing)`;
-  return `🛬 ${d} jump${bonusM ? ` (needed ${formatDistance(bonusM)})` : ''}`;
+  return `🛬 ${d} jump${bonusM ? ` (needed ${formatDistance(bonusM, 'kmh')})` : ''}`;
 }
 
 const CONFETTI_COLORS = ['#ff4d4d', '#ffd23f', '#3fb6ff', '#6ee06e', '#ff8ad8', '#ffffff', '#ff9a3d'];

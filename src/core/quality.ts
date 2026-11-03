@@ -215,7 +215,9 @@ export class QualityManager {
         this.promptWindows = 0;
         this.promptFrameSum = 0;
       }
-      if (this.promptWindows >= QualityManager.PROMPT_WINDOWS) {
+      // Under ~10 fps the game itself runs in slow motion (frame step capped), so ask after ~3 s instead of ~10 s.
+      const veryslow = this.promptWindows >= 3 && this.promptFrameSum / this.promptWindows > 100;
+      if (this.promptWindows >= QualityManager.PROMPT_WINDOWS || veryslow) {
         const mean = this.promptFrameSum / this.promptWindows;
         this.promptRaised = true;
         console.info(`[quality] avg frame ${mean.toFixed(1)} ms for ${this.promptWindows} s → asking to lower graphics`);
