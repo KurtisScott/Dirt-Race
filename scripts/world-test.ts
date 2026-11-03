@@ -37,13 +37,32 @@ const check = (ok: boolean, msg: string): void => {
   if (!ok) failures++;
 };
 
-function makeWorld() {
+/**
+ * Deterministic runs: animals (src/world/animals.ts) seed their crossing plan from Date.now() and use
+ * Math.random for their wander phase, the AI and damage pull use Math.random too. Each world gets a fixed
+ * seed (per vehicle for the drives) so a run is repeatable and a pass/fail never depends on the clock.
+ */
+function seedRandom(seed: number): void {
+  let a = seed >>> 0;
+  Math.random = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const seedOf = (label: string): number => [...label].reduce((h, ch) => Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0, 2166136261);
+
+function makeWorld(seed = 12345) {
+  seedRandom(seed);
   const physics = new PhysicsWorld();
   const scene = new THREE.Scene();
   const ctx = { physics, renderer: { scene }, quality: { preset: { textureSize: 64, detail: 0.5, level: 'low' } } } as never;
   const t0 = performance.now();
   const world = new RaceCourse(ctx);
   const ms = performance.now() - t0;
+  (world as unknown as { animalSys: { reset(seed?: number): void } }).animalSys.reset(seed);
   return { physics, world, scene, ms };
 }
 
@@ -289,7 +308,7 @@ const fmtDmg = (by: Record<string, number>) =>
     .join(', ') || 'none';
 
 function drive(kind: VehicleKind, opts: { shortcut?: boolean; animals?: boolean; maxS?: number; wander?: boolean; wobble?: number } = {}): DriveResult {
-  const { physics, world } = makeWorld();
+  const { physics, world } = makeWorld(seedOf(`${kind}:${JSON.stringify(opts)}`));
   world.animalsEnabled = opts.animals ?? true;
   const c = world.data;
   const v = createVehicle({ physics, surfaces: world, spec: VEHICLES[kind], paint: 0xff0000, racer: 'player', spawn: world.spawns.player });
