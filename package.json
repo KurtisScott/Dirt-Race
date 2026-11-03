@@ -4,7 +4,7 @@
   "description": "Dirt Race: tilt-to-steer 3D racing game for iPad (Three.js + Rapier)",
   "scripts": {
     "dev": "vite --host",
-    "build": "npm run icons && npm run typecheck && vite build",
+    "build": "npm run icons && npm run textures && npm run typecheck && vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "icons": "node scripts/gen-icons.mjs",
@@ -15,12 +15,16 @@
     "race-test": "tsx scripts/race-test.ts",
     "audio-test": "tsx scripts/audio-test.ts",
     "audio-render": "node scripts/audio-render.mjs",
-    "world-test": "tsx scripts/world-test.ts"
+    "world-test": "tsx scripts/world-test.ts",
+    "textures": "tsx scripts/gen-textures.ts",
+    "look-shots": "node scripts/look-shots.mjs"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",
+    "n8ao": "^2.0.1",
+    "postprocessing": "^6.39.6",
     "three": "^0.187.0"
   },
   "devDependencies": {

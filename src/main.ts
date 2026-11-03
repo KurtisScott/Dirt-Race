@@ -9,7 +9,7 @@ import { setWakeLock } from './core/wakeLock';
 import type { GameContext } from './core/context';
 import type { System } from './core/types';
 import { preventBrowserGestures, PlayerInput } from './input';
-import { createVehicle, type Vehicle } from './vehicles';
+import { createVehicle, VEHICLES, type Vehicle } from './vehicles';
 import { createWorldAsync, type World } from './world';
 import { RaceController, RaceFlow } from './race';
 import { AIDriver, createPhysicsSensor } from './ai';
@@ -246,6 +246,8 @@ async function boot(): Promise<void> {
       const p = playerCar();
       if (p) {
         renderer.setShadowFocus(p.position);
+        // Ultra: subtle radial speed blur from ~60 km/h, full at ~150 km/h.
+        renderer.setSpeedBlur(r.canDrive('player') ? (Math.abs(p.speed) - 16) / 26 : 0);
         input.touch.setSpeed(p.speed * 3.6, settings.speedUnit);
       }
       if (ui.calibrate.el.hidden === false) ui.setTiltReadout(input.tilt.status === 'granted' ? `tilt ${input.tilt.rawAngle.toFixed(0)}°` : '');
@@ -310,6 +312,7 @@ async function boot(): Promise<void> {
     events,
     fx,
     physics,
+    vehicles: VEHICLES,
   };
 }
 
