@@ -97,6 +97,7 @@ export class Obstacles {
     const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
     this.hay = new THREE.InstancedMesh(geo, mat, Math.max(1, list.length));
     this.hay.castShadow = true;
+    this.hay.userData.surface = 'hay';
     this.hay.receiveShadow = true;
     this.hay.count = list.length;
     list.forEach((pl, i) => {
@@ -146,6 +147,7 @@ export class Obstacles {
     const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
     this.cones = new THREE.InstancedMesh(merged, mat, Math.max(1, list.length));
     this.cones.castShadow = true;
+    this.cones.userData.surface = 'plastic';
     this.cones.count = list.length;
     list.forEach((pl, i) => {
       const p = new THREE.Vector3(pl.x, pl.y + 0.02, pl.z);

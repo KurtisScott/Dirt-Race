@@ -435,6 +435,7 @@ const cyl = (r0: number, r1: number, h: number, n = 6): THREE.BufferGeometry => 
 function mesh(parts: THREE.BufferGeometry[]): THREE.Mesh {
   const m = new THREE.Mesh(mergeGeometries(parts)!, MAT);
   m.castShadow = true;
+  m.userData.surface = 'fur'; // Round 2: PBR fur twin on High/Ultra (world/vegetation.ts tierSwap)
   return m;
 }
 

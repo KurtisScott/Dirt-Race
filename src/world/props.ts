@@ -12,6 +12,12 @@ export interface Template {
   nrm: Float32Array;
   col: Float32Array;
   idx: Uint32Array;
+  /** Round 2 (High/Ultra props only): texture coordinates (foliage cards). */
+  uv?: Float32Array;
+  /** Per-vertex wind sway weight 0..1 (foliage, grass). */
+  wind?: Float32Array;
+  /** Per-vertex surface id for the PBR prop shader (see world/vegetation.ts PROP_MAT). */
+  mat?: Float32Array;
 }
 
 /** Colour every vertex of a geometry, optionally jittered per vertex for a hand-painted look. */
@@ -29,14 +35,28 @@ export function paint(g: THREE.BufferGeometry, color: number, jitter = 0, seed =
   return g;
 }
 
-function prep(g: THREE.BufferGeometry): THREE.BufferGeometry {
-  // Keep only position/normal/color so everything merges.
-  for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'color') g.deleteAttribute(k);
+function prep(g: THREE.BufferGeometry, extras: boolean): THREE.BufferGeometry {
+  // Keep only position/colour (+ the Round 2 extras) so everything merges.
+  const keep = extras ? ['position', 'color', 'aMat', 'aWind', 'uv'] : ['position', 'color'];
+  for (const k of Object.keys(g.attributes)) if (!keep.includes(k)) g.deleteAttribute(k);
+  if (extras) {
+    const n = g.attributes.position.count;
+    if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+    if (!g.attributes.aWind) g.setAttribute('aWind', new THREE.BufferAttribute(new Float32Array(n), 1));
+    if (!g.attributes.aMat) g.setAttribute('aMat', new THREE.BufferAttribute(new Float32Array(n), 1));
+  }
   return g;
 }
 
-export function toTemplate(parts: THREE.BufferGeometry[], flat = false): Template {
-  let g = mergeGeometries(parts.map((p) => (p.index ? p.toNonIndexed() : p)).map(prep), false)!;
+/** Tag every vertex of a geometry with a PBR prop surface id (world/vegetation.ts PROP_MAT). */
+export function tagMat(g: THREE.BufferGeometry, id: number): THREE.BufferGeometry {
+  g.setAttribute('aMat', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count).fill(id), 1));
+  return g;
+}
+
+/** `extras`: keep uv / aWind / aMat (Round 2 PBR props). */
+export function toTemplate(parts: THREE.BufferGeometry[], flat = false, extras = false): Template {
+  let g = mergeGeometries(parts.map((p) => (p.index ? p.toNonIndexed() : p)).map((p) => prep(p, extras)), false)!;
   if (flat) {
     g.computeVertexNormals();
   } else {
@@ -44,12 +64,24 @@ export function toTemplate(parts: THREE.BufferGeometry[], flat = false): Templat
     g.computeVertexNormals();
   }
   const idx = g.index ? new Uint32Array(g.index.array) : new Uint32Array(Array.from({ length: g.attributes.position.count }, (_, i) => i));
-  return {
+  const t: Template = {
     pos: new Float32Array(g.attributes.position.array),
     nrm: new Float32Array(g.attributes.normal.array),
     col: new Float32Array(g.attributes.color.array),
     idx,
   };
+  if (extras) {
+    t.uv = new Float32Array(g.attributes.uv.array);
+    t.wind = new Float32Array(g.attributes.aWind.array);
+    t.mat = new Float32Array(g.attributes.aMat.array);
+  }
+  return t;
+}
+
+/** Copy of a classic template with every vertex tagged as surface `id` (Round 2 PBR props). */
+export function withMat(t: Template, id: number): Template {
+  const n = t.pos.length / 3;
+  return { ...t, uv: new Float32Array(n * 2), wind: new Float32Array(n), mat: new Float32Array(n).fill(id) };
 }
 
 /** Displace vertices of a sphere-ish geometry with low-frequency noise (rocks, canopies). */
@@ -297,6 +329,33 @@ export function houseTemplate(variant: number): Template {
   for (const x of [1.2, 3.0]) parts.push(paint(new THREE.BoxGeometry(1.1, 1.0, 0.1).translate(x, 1.8, D / 2 + 0.03), 0x34495e));
   for (const x of [-2.5, 2.5]) parts.push(paint(new THREE.BoxGeometry(1.1, 1.0, 0.1).translate(x, 1.8, -D / 2 - 0.03), 0x34495e));
   parts.push(paint(new THREE.BoxGeometry(0.6, 1.6, 0.6).translate(2.4, H + 1.4, -0.8), 0x8b5a44));
+  // Round 2 detail: stone foundation, white window frames + sills + shutters, door frame, porch step,
+  // fascia boards under the eaves, side windows.
+  const trim = 0xf3f1ea;
+  parts.push(paint(new THREE.BoxGeometry(W + 0.12, 0.45, D + 0.12).translate(0, 0.2, 0), 0x8d877c, 0.12, 41));
+  const frame = (x: number, y: number, z: number, w: number, h: number, ry = 0): void => {
+    const g = [
+      new THREE.BoxGeometry(w + 0.16, 0.08, 0.14).translate(0, h / 2 + 0.04, 0),
+      new THREE.BoxGeometry(w + 0.3, 0.07, 0.22).translate(0, -h / 2 - 0.04, 0.04),
+      new THREE.BoxGeometry(0.08, h, 0.14).translate(-w / 2 - 0.04, 0, 0),
+      new THREE.BoxGeometry(0.08, h, 0.14).translate(w / 2 + 0.04, 0, 0),
+      new THREE.BoxGeometry(0.05, h, 0.12).translate(0, 0, 0),
+    ];
+    for (const gg of g) parts.push(paint(gg.rotateY(ry).translate(x, y, z), trim));
+  };
+  for (const x of [1.2, 3.0]) {
+    frame(x, 1.8, D / 2 + 0.05, 1.1, 1.0);
+    for (const sx of [-1, 1]) parts.push(paint(new THREE.BoxGeometry(0.4, 1.05, 0.06).translate(x + sx * 0.78, 1.8, D / 2 + 0.06), ROOF_COLORS[variant % 4], 0.05, 42));
+  }
+  for (const x of [-2.5, 2.5]) frame(x, 1.8, -D / 2 - 0.05, 1.1, 1.0, Math.PI);
+  for (const sz of [-1, 1]) {
+    parts.push(paint(new THREE.BoxGeometry(0.1, 1.0, 1.0).translate(sz * (W / 2 + 0.03), 1.8, 0), 0x34495e));
+    frame(sz * (W / 2 + 0.05), 1.8, 0, 1.0, 1.0, (sz * Math.PI) / 2);
+  }
+  parts.push(paint(new THREE.BoxGeometry(1.4, 0.1, 0.16).translate(-1.6, 2.15, D / 2 + 0.06), trim));
+  for (const sx of [-1, 1]) parts.push(paint(new THREE.BoxGeometry(0.1, 2.15, 0.16).translate(-1.6 + sx * 0.62, 1.07, D / 2 + 0.06), trim));
+  parts.push(paint(new THREE.BoxGeometry(1.8, 0.2, 0.9).translate(-1.6, 0.1, D / 2 + 0.45), 0x9a948a, 0.08, 43));
+  for (const sz of [-1, 1]) parts.push(paint(new THREE.BoxGeometry(W + 0.5, 0.16, 0.08).translate(0, H + 0.02, sz * (D / 2 + 0.42)), trim));
   return toTemplate(parts, true);
 }
 
@@ -313,6 +372,21 @@ function barnTemplate(): Template {
   parts.push(paint(new THREE.BoxGeometry(2.8, 2.8, 0.12).translate(0, 1.6, D / 2 + 0.04), 0x8f2a23));
   parts.push(paint(new THREE.CylinderGeometry(1.6, 1.6, 9, 10).translate(W / 2 + 2.2, 4.5, -1), 0xb9bfc4, 0.05, 16));
   parts.push(paint(new THREE.SphereGeometry(1.6, 10, 4, 0, Math.PI * 2, 0, Math.PI / 2).translate(W / 2 + 2.2, 9, -1), 0x9aa1a7));
+  return toTemplate(parts, true);
+}
+
+/**
+ * Round 2 road-edge marker posts (kid readability, like real mountain / desert roads): 'snow' = tall
+ * orange-and-black snow pole, 'desert' = short wooden post with a red reflector.
+ */
+export function markerPostTemplate(kind: 'snow' | 'desert'): Template {
+  const parts: THREE.BufferGeometry[] = [];
+  if (kind === 'snow') {
+    for (let k = 0; k < 6; k++) parts.push(paint(new THREE.CylinderGeometry(0.035, 0.04, 0.33, 6).translate(0, 0.17 + k * 0.33, 0), k % 2 ? 0x1c1c1c : 0xff6a10));
+  } else {
+    parts.push(paint(new THREE.BoxGeometry(0.12, 0.9, 0.12).translate(0, 0.45, 0), 0x8a6a45, 0.1, 31));
+    parts.push(paint(new THREE.BoxGeometry(0.13, 0.12, 0.13).translate(0, 0.78, 0), 0xd8241c));
+  }
   return toTemplate(parts, true);
 }
 
@@ -390,6 +464,9 @@ interface ChunkBuf {
   nrm: number[];
   col: number[];
   idx: number[];
+  uv: number[];
+  wind: number[];
+  mat: number[];
 }
 
 const _m = new THREE.Matrix4();
@@ -403,13 +480,17 @@ const UP = new THREE.Vector3(0, 1, 0);
 /** Accumulates transformed templates into grid chunks; `build()` returns one mesh per chunk. */
 export class ChunkMerger {
   private chunks = new Map<string, ChunkBuf>();
-  constructor(private size: number) {}
+  /** `extras`: also merge uv / aWind / aMat (Round 2 PBR props; templates without them get zeros). */
+  constructor(
+    private size: number,
+    private extras = false,
+  ) {}
 
   add(t: Template, x: number, y: number, z: number, yaw: number, scale: number | THREE.Vector3, tint = 1, matrix?: THREE.Matrix4): void {
     const key = `${Math.floor(x / this.size)},${Math.floor(z / this.size)}`;
     let c = this.chunks.get(key);
     if (!c) {
-      c = { pos: [], nrm: [], col: [], idx: [] };
+      c = { pos: [], nrm: [], col: [], idx: [], uv: [], wind: [], mat: [] };
       this.chunks.set(key, c);
     }
     if (matrix) _m.copy(matrix);
@@ -428,6 +509,11 @@ export class ChunkMerger {
       _v.set(t.nrm[i * 3], t.nrm[i * 3 + 1], t.nrm[i * 3 + 2]).applyMatrix3(_nm).normalize();
       c.nrm.push(_v.x, _v.y, _v.z);
       c.col.push(t.col[i * 3] * tint, t.col[i * 3 + 1] * tint, t.col[i * 3 + 2] * tint);
+      if (this.extras) {
+        c.uv.push(t.uv ? t.uv[i * 2] : 0, t.uv ? t.uv[i * 2 + 1] : 0);
+        c.wind.push(t.wind ? t.wind[i] : 0);
+        c.mat.push(t.mat ? t.mat[i] : 0);
+      }
     }
     for (let i = 0; i < t.idx.length; i++) c.idx.push(t.idx[i] + base);
   }
@@ -439,6 +525,11 @@ export class ChunkMerger {
       g.setAttribute('position', new THREE.Float32BufferAttribute(c.pos, 3));
       g.setAttribute('normal', new THREE.Float32BufferAttribute(c.nrm, 3));
       g.setAttribute('color', new THREE.Float32BufferAttribute(c.col, 3));
+      if (this.extras) {
+        g.setAttribute('uv', new THREE.Float32BufferAttribute(c.uv, 2));
+        g.setAttribute('aWind', new THREE.Float32BufferAttribute(c.wind, 1));
+        g.setAttribute('aMat', new THREE.Float32BufferAttribute(c.mat, 1));
+      }
       g.setIndex(c.pos.length / 3 > 65535 ? new THREE.Uint32BufferAttribute(c.idx, 1) : new THREE.Uint16BufferAttribute(c.idx, 1));
       g.computeBoundingSphere();
       const m = new THREE.Mesh(g, material);

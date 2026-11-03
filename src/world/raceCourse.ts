@@ -16,6 +16,7 @@ import {
   gorgeBridgeTemplate,
   houseTemplate,
   logTemplate,
+  markerPostTemplate,
   pineTemplate,
   rampTemplate,
   rockTemplate,
@@ -24,10 +25,15 @@ import {
   treeTemplate,
   tuftTemplate,
   type Template,
+  withMat,
 } from './props';
 import { GORGE_DEPTH_M } from './layout';
+import { GrassField } from './grass';
+import { tierSwap, broadleafHQ, bushHQ, classifyMats, makeFoliageAtlas, makeFoliageMaterial, makePropMaterial, pineHQ, PROP_MAT, rockHQ, windTime } from './vegetation';
 import { loadJSON, saveJSON } from '../core/storage';
 import { createTerrainCollider, createTerrainMesh, type TerrainHandles, type TerrainShading } from './terrain';
+import { forgetPBRSet, loadPBRSet, type PBRSet } from './pbrTextures';
+import { makeAsphaltPBRMaterial, makeWaterPBRMaterial } from './terrainPBR';
 import { makeAsphaltTexture, makeBannerTexture, makeCheckerTexture, makeSignAtlas, makeWaterNormal, type SignCell } from './textures';
 import type { Checkpoint, JumpInfo, World, Zone } from './types';
 import type { TrackShortcut } from '../ai/types';
@@ -78,6 +84,14 @@ export class RaceCourse implements World {
   private time = 0;
   private disposables: { dispose(): void }[] = [];
   private offQuality: () => void;
+  /** Round 2: photographic texture set for High/Ultra (null on Low/Medium or until loaded). */
+  private pbr: PBRSet | null = null;
+  private pbrLoading = 0;
+  private pbrFailed = false;
+  private roadMats: { classic: THREE.Material; pbr: THREE.Material | null } | null = null;
+  private waterMats: { classic: THREE.Material; pbr: THREE.Material } | null = null;
+  /** Ultra: instanced grass blades around the camera. */
+  private grass: GrassField | null = null;
 
   /** `data` may be pre-built (lets the loading screen show progress between the two halves of the build). */
   constructor(
@@ -147,6 +161,8 @@ export class RaceCourse implements World {
 
   update(dt: number): void {
     this.time += dt;
+    windTime.value = this.time;
+    this.grass?.update(this.ctx.renderer.camera);
     this.checkTerrainShader();
     this.obstacles.update(dt);
     this.animalSys.update(dt);
@@ -159,10 +175,16 @@ export class RaceCourse implements World {
 
   dispose(): void {
     this.offQuality();
+    this.pbrLoading++;
+    this.setPBR(null);
+    this.roadMats?.pbr?.dispose();
     this.obstacles.dispose();
     this.animalSys.dispose();
     this.terrain.dispose();
     for (const d of this.disposables) d.dispose();
+    for (const m of this.propMats) m.dispose();
+    this.foliageAtlas?.dispose();
+    this.grass?.dispose();
     this.group.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
     this.group.parent?.remove(this.group);
   }
@@ -190,7 +212,74 @@ export class RaceCourse implements World {
    */
   private wantedShading(): TerrainShading {
     if (terrainForcedSimple()) return 'simple';
-    return this.ctx.quality.preset.level === 'low' ? 'lite' : 'full';
+    const q = this.ctx.quality.preset;
+    if (q.terrainPBR > 0 && this.pbr && !this.pbrFailed) return 'pbr';
+    return q.level === 'low' ? 'lite' : 'full';
+  }
+
+  /**
+   * Load the photographic texture set this quality level wants (High 512 px, Ultra 1024 px) and switch the
+   * terrain and asphalt to it; drop it again on Low/Medium. The boot awaits this once (loading bar).
+   */
+  async loadLook(progress?: (f: number) => void): Promise<void> {
+    const size = this.ctx.quality.preset.terrainPBR;
+    if (size === 0 || this.pbrFailed || terrainForcedSimple()) {
+      this.setPBR(null);
+      return;
+    }
+    if (this.pbr?.size === size) return;
+    const ticket = ++this.pbrLoading;
+    const set = await loadPBRSet(size, progress);
+    if (ticket !== this.pbrLoading || this.ctx.quality.preset.terrainPBR !== size) {
+      if (set && set !== this.pbr) (set.dispose(), forgetPBRSet(size));
+      return;
+    }
+    this.setPBR(set);
+  }
+
+  private setPBR(set: PBRSet | null): void {
+    if (set === this.pbr) return;
+    const old = this.pbr;
+    this.pbr = set;
+    this.terrain.setPBR(set);
+    if (this.roadMats?.pbr) {
+      this.roadMats.pbr.dispose();
+      this.roadMats.pbr = null;
+    }
+    if (set && this.roadMats) this.roadMats.pbr = makeAsphaltPBRMaterial(set);
+    if (old) {
+      old.dispose();
+      forgetPBRSet(old.size);
+    }
+    this.refreshPropMaterial();
+    this.applyShading();
+  }
+
+  private applyGrass(): void {
+    const n = this.ctx.quality.preset.grass;
+    if (this.grass && (n === 0 || this.grassMax !== n)) {
+      this.grass.dispose();
+      this.grass = null;
+    }
+    if (n > 0 && !this.grass && typeof document !== 'undefined') {
+      this.grass = new GrassField(this.data, n);
+      this.grassMax = n;
+      this.group.add(this.grass.mesh);
+    }
+  }
+  private grassMax = 0;
+
+  /** Terrain shading + road material for the current quality / loaded textures. */
+  private applyShading(): void {
+    if (this.terrain.shading !== 'simple') this.terrain.setShading(this.wantedShading());
+    this.shaderChecked = false;
+    tierSwap(this.obstacles.group, this.ctx.quality.preset.pbr);
+    tierSwap(this.animalSys.group, this.ctx.quality.preset.pbr);
+    if (this.water && this.waterMats) this.water.material = this.ctx.quality.preset.pbr ? this.waterMats.pbr : this.waterMats.classic;
+    const road = this.terrain.shading === 'pbr' && this.roadMats?.pbr ? this.roadMats.pbr : this.roadMats?.classic;
+    if (road) this.group.traverse((o) => {
+      if (o.userData.road) (o as THREE.Mesh).material = road;
+    });
   }
 
   private shaderChecked = false;
@@ -205,7 +294,15 @@ export class RaceCourse implements World {
     const m = this.terrain.material;
     if (!r.programReady(m)) return; // not drawn yet
     this.shaderChecked = true;
-    if (r.programFailed!(m)) this.forceSimpleTerrain('terrain shader failed to compile');
+    if (!r.programFailed!(m)) return;
+    if (this.terrain.shading === 'pbr') {
+      // The big PBR splat didn't compile here: back to the procedural splat (checked again next frame).
+      console.warn('[world] PBR terrain shader failed to compile → procedural layers');
+      this.pbrFailed = true;
+      this.setPBR(null);
+      return;
+    }
+    this.forceSimpleTerrain('terrain shader failed to compile');
   }
 
   private forceSimpleTerrain(why: string): void {
@@ -216,11 +313,14 @@ export class RaceCourse implements World {
 
   private applyQuality(): void {
     const q = this.ctx.quality.preset;
-    if (this.terrain.shading !== 'simple') this.terrain.setShading(this.wantedShading());
+    if ((this.pbr?.size ?? 0) !== q.terrainPBR) void this.loadLook();
+    this.buildProps(q.detail);
+    this.applyGrass();
+    this.applyShading();
     // Decorative props: hide the tuft layer on Low; shadows from big props only with shadows on.
     this.group.traverse((o) => {
       const tag = o.userData.layer as string | undefined;
-      if (tag === 'tufts') o.visible = q.detail >= 0.6;
+      if (tag === 'tufts') o.visible = q.detail >= 0.6 && q.grass === 0;
       if (tag === 'bushes') o.visible = q.detail >= 0.5;
       // Small scattered rocks are pure decoration (no colliders): skipped on Low (~10 draw calls).
       if (tag === 'rocks') o.visible = q.detail >= 0.5;
@@ -423,6 +523,7 @@ export class RaceCourse implements World {
     this.disposables.push(tex);
     const mat = new THREE.MeshLambertMaterial({ map: tex, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
     this.disposables.push(mat);
+    this.roadMats = { classic: mat, pbr: null };
     this.roadRibbon(0, town.endS + 6, -1, town.endS - 4, mat, 'asphalt');
     this.roadRibbon(c.finishS - 8, c.jump.footS + 0.5, c.finishS, Infinity, mat, 'asphalt-runup');
   }
@@ -464,19 +565,48 @@ export class RaceCourse implements World {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
     mesh.name = name;
+    mesh.userData.road = true;
     this.group.add(mesh);
   }
 
+  /** Which prop set is built: classic low-poly (Low/Medium) or the Round 2 realistic one (High/Ultra). */
+  private propsHQ: boolean | null = null;
+  private propMats: THREE.Material[] = [];
+  private propMatHQ: THREE.MeshStandardMaterial | null = null;
+  private foliageAtlas: THREE.Texture | null = null;
+
+  /** (Re)build every decorative/static prop mesh for the current lighting tier. */
   private buildProps(detail: number): void {
+    const hq = this.ctx.quality.preset.pbr && typeof document !== 'undefined';
+    if (this.propsHQ === hq) return;
+    // Drop the previous set (geometry + materials); colliders are separate and stay.
+    const old: THREE.Object3D[] = [];
+    for (const o of this.group.children) if (o.userData.props) old.push(o);
+    for (const o of old) {
+      (o as THREE.Mesh).geometry?.dispose();
+      this.group.remove(o);
+    }
+    for (const m of this.propMats) m.dispose();
+    this.propMats = [];
+    this.propMatHQ = null;
+    this.propsHQ = hq;
+    if (hq) this.buildPropsHQ(detail);
+    else this.buildPropsClassic(detail);
+  }
+
+  private addProps(meshes: THREE.Mesh[], layer: string): void {
+    for (const m of meshes) {
+      m.userData.layer = layer;
+      m.userData.props = true;
+      this.group.add(m);
+    }
+  }
+
+  private buildPropsClassic(detail: number): void {
     const c = this.data;
     const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
-    this.disposables.push(mat);
-    const add = (meshes: THREE.Mesh[], layer: string): void => {
-      for (const m of meshes) {
-        m.userData.layer = layer;
-        this.group.add(m);
-      }
-    };
+    this.propMats.push(mat);
+    const add = (meshes: THREE.Mesh[], layer: string): void => this.addProps(meshes, layer);
     const variants = <T,>(n: number, f: (v: number) => T): T[] => Array.from({ length: n }, (_, i) => f(i));
 
     // Big static props: trees, houses, boulders, rocks, fences, ramps, bridge → merged per 160 m chunk.
@@ -496,31 +626,7 @@ export class RaceCourse implements World {
     for (const t of c.cacti) big.add(cacti[t.v % 3], t.x, t.y - 0.1, t.z, t.yaw, t.scale);
     for (const b of c.boulders) big.add(boulderT[b.v % 6], b.x, b.y - 0.25 * b.scale, b.z, b.yaw, b.scale * 1.1);
     for (const l of c.logs) big.add(logTemplate(l.radius, l.length), l.x, l.y - 0.05, l.z, l.yaw, 1);
-    const fence = fenceTemplate();
-    const fm = new THREE.Matrix4();
-    for (const f of c.fences) {
-      // Shear the bay so it follows the slope: x-axis spans a→b in 3D.
-      const dx = f.b.x - f.a.x;
-      const dz = f.b.y - f.a.y;
-      const dy = f.yb - f.ya;
-      const len = Math.hypot(dx, dz);
-      fm.set(dx, 0, -dz / len, f.a.x, dy, 1, 0, f.ya, dz, 0, dx / len, f.a.y, 0, 0, 0, 1);
-      big.add(fence, f.a.x, f.ya, f.a.y, 0, 1, 1, fm);
-    }
-    for (const r of c.ramps) big.add(rampTemplate(r.halfWidth, r.length, r.height, r.style), r.x, r.y - 0.02, r.z, r.yaw, 1);
-    const b = c.bridge;
-    big.add(bridgeTemplate(b.length, b.halfWidth, 0, 3), b.x, b.y, b.z, b.yaw, 1);
-    {
-      const { mid, q, len } = this.gorgeFrame();
-      const m = new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1));
-      big.add(gorgeBridgeTemplate(len, c.gorge.halfWidth, GORGE_DEPTH_M + 2), mid.x, mid.y, mid.z, 0, 1, 1, m);
-    }
-    {
-      const j = c.jump;
-      const foot = c.spawnAt(j.footS, 0);
-      big.add(bigRampTemplate(j.halfWidth, j.rampLen, j.rampHeight, j.rampDeg), foot.x, foot.y - 0.01, foot.z, foot.yaw, 1);
-    }
-    // Bridge ends ramp down to the ground: approximate by drawing it at deck height (ramps are short).
+    this.addStructures(big, (t) => t);
     add(big.build(mat, true), 'big');
 
     // Small props: rocks & bushes (no shadows), tufts (no shadows, hidden on Low).
@@ -537,7 +643,7 @@ export class RaceCourse implements World {
     }
     add(bushes.build(mat, false), 'bushes');
     const tuftMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-    this.disposables.push(tuftMat);
+    this.propMats.push(tuftMat);
     const tufts = new ChunkMerger(120);
     const tuftT = variants(3, tuftTemplate);
     const keep = Math.max(0.35, detail);
@@ -547,6 +653,141 @@ export class RaceCourse implements World {
       tufts.add(tuftT[t.v % 3], t.x, t.y - 0.05, t.z, t.yaw, t.scale);
     }
     add(tufts.build(tuftMat, false), 'tufts');
+  }
+
+  /** Fences, ramps, bridges, the big jump ramp (shared by both prop tiers; `tag` re-tags templates for PBR). */
+  private addStructures(big: ChunkMerger, tag: (t: Template) => Template): void {
+    const c = this.data;
+    const fence = tag(fenceTemplate());
+    const fm = new THREE.Matrix4();
+    for (const f of c.fences) {
+      // Shear the bay so it follows the slope: x-axis spans a→b in 3D.
+      const dx = f.b.x - f.a.x;
+      const dz = f.b.y - f.a.y;
+      const dy = f.yb - f.ya;
+      const len = Math.hypot(dx, dz);
+      fm.set(dx, 0, -dz / len, f.a.x, dy, 1, 0, f.ya, dz, 0, dx / len, f.a.y, 0, 0, 0, 1);
+      big.add(fence, f.a.x, f.ya, f.a.y, 0, 1, 1, fm);
+    }
+    for (const r of c.ramps) big.add(tag(rampTemplate(r.halfWidth, r.length, r.height, r.style)), r.x, r.y - 0.02, r.z, r.yaw, 1);
+    // Round 2: marker posts along both road edges on the snowy pass and through the desert, so the road
+    // reads clearly from a distance.
+    for (const [zone, kind, step] of [['snow', 'snow', 18], ['desert', 'desert', 24]] as const) {
+      const z = c.zone(zone);
+      const t = tag(markerPostTemplate(kind));
+      for (let s = z.startS + 10; s < z.endS - 5; s += step) {
+        const off = c.halfWidthAt(s) + 1.1;
+        for (const side of [-1, 1]) {
+          const p = c.spawnAt(s + (side > 0 ? step / 2 : 0), side * off);
+          big.add(t, p.x, p.y - 0.05, p.z, p.yaw, 1);
+        }
+      }
+    }
+    const b = c.bridge;
+    big.add(tag(bridgeTemplate(b.length, b.halfWidth, 0, 3)), b.x, b.y, b.z, b.yaw, 1);
+    {
+      const { mid, q, len } = this.gorgeFrame();
+      const m = new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1));
+      big.add(tag(gorgeBridgeTemplate(len, c.gorge.halfWidth, GORGE_DEPTH_M + 2)), mid.x, mid.y, mid.z, 0, 1, 1, m);
+    }
+    {
+      const j = c.jump;
+      const foot = c.spawnAt(j.footS, 0);
+      big.add(tag(bigRampTemplate(j.halfWidth, j.rampLen, j.rampHeight, j.rampDeg)), foot.x, foot.y - 0.01, foot.z, foot.yaw, 1);
+    }
+  }
+
+  /**
+   * Round 2 realistic props (High/Ultra): foliage-card trees with wind, textured noise-displaced rocks,
+   * PBR surfaces by id on houses/fences/ramps/bridges. Rocks pick up the terrain rock textures once the
+   * texture set has loaded (`refreshPropMaterial`).
+   */
+  private buildPropsHQ(detail: number): void {
+    const c = this.data;
+    this.foliageAtlas ??= makeFoliageAtlas();
+    const propMat = makePropMaterial(this.pbr);
+    this.propMatHQ = propMat;
+    this.propMats.push(propMat);
+    const foliageMat = this.foliageAtlas ? makeFoliageMaterial(this.foliageAtlas) : propMat;
+    if (foliageMat !== propMat) this.propMats.push(foliageMat);
+    const variants = <T,>(n: number, f: (v: number) => T): T[] => Array.from({ length: n }, (_, i) => f(i));
+    const big = new ChunkMerger(160, true);
+    const leaves = new ChunkMerger(160, true);
+    const trees = variants(6, (v) => broadleafHQ(v));
+    const pines = variants(6, (v) => pineHQ(v, false));
+    const snowPines = variants(4, (v) => pineHQ(v + 7, true));
+    for (const t of c.trees) {
+      const tt = trees[(((t.v + Math.round(t.x)) % 6) + 6) % 6];
+      big.add(tt.wood, t.x, t.y - 0.1, t.z, t.yaw, t.scale);
+      leaves.add(tt.leaves, t.x, t.y - 0.1, t.z, t.yaw, t.scale);
+    }
+    for (const t of c.pines) {
+      const tt = pines[(((t.v + Math.round(t.z)) % 6) + 6) % 6];
+      big.add(tt.wood, t.x, t.y - 0.1, t.z, t.yaw, t.scale * 0.95);
+      leaves.add(tt.leaves, t.x, t.y - 0.1, t.z, t.yaw, t.scale * 0.95);
+    }
+    for (const t of c.snowPines) {
+      const tt = snowPines[t.v % 4];
+      big.add(tt.wood, t.x, t.y - 0.1, t.z, t.yaw, t.scale * 0.95);
+      leaves.add(tt.leaves, t.x, t.y - 0.1, t.z, t.yaw, t.scale * 0.95);
+    }
+    const near = (r: number, g: number, b: number, hex: number): boolean => {
+      const k = new THREE.Color(hex);
+      return Math.abs(r - k.r) + Math.abs(g - k.g) + Math.abs(b - k.b) < 0.06;
+    };
+    const houseRule = (r: number, g: number, b: number): number => {
+      if (near(r, g, b, 0x34495e)) return PROP_MAT.glass;
+      if ([0x9c3b2e, 0x5b5f66, 0x7a4a2e, 0x8a3530, 0x4f5358, 0x9aa1a7, 0xb9bfc4].some((h) => near(r, g, b, h))) return PROP_MAT.roof;
+      return PROP_MAT.wood;
+    };
+    const woodRule = (r: number, g: number, b: number): number => (near(r, g, b, 0xf2c12e) || near(r, g, b, 0x222222) || near(r, g, b, 0xd0442f) || near(r, g, b, 0xf4f1ea) || near(r, g, b, 0xb8322a) || near(r, g, b, 0xff5a1f) || near(r, g, b, 0xff6a10) || near(r, g, b, 0xd8241c) ? PROP_MAT.gloss : PROP_MAT.wood);
+    const houses: Record<number, Template> = {};
+    for (const h of c.houses) big.add((houses[h.v] ??= classifyMats(houseTemplate(h.v), houseRule)), h.x, h.y - 0.2, h.z, h.yaw, h.v >= 10 ? 1 : h.scale);
+    const cacti = variants(3, (v) => withMat(cactusTemplate(v), PROP_MAT.matte));
+    for (const t of c.cacti) big.add(cacti[t.v % 3], t.x, t.y - 0.1, t.z, t.yaw, t.scale);
+    const boulderT = variants(6, (v) => rockHQ(v, v < 3 ? 0x9a8f80 : 0xa8664a));
+    for (const b of c.boulders) big.add(boulderT[b.v % 6], b.x, b.y - 0.25 * b.scale, b.z, b.yaw, b.scale * 1.1);
+    for (const l of c.logs) big.add(withMat(logTemplate(l.radius, l.length), PROP_MAT.bark), l.x, l.y - 0.05, l.z, l.yaw, 1);
+    this.addStructures(big, (t) => classifyMats(t, woodRule));
+    this.addProps(big.build(propMat, true), 'big');
+    this.addProps(leaves.build(foliageMat, true), 'foliage');
+
+    const small = new ChunkMerger(120, true);
+    const rocksT = variants(4, (v) => rockHQ(v + 10, 0x8f877c));
+    for (const r of c.rocks) small.add(rocksT[r.v % 4], r.x, r.y - 0.15, r.z, r.yaw, r.scale * 0.5);
+    this.addProps(small.build(propMat, false), 'rocks');
+    const bushes = new ChunkMerger(160, true);
+    const bushT = variants(4, (v) => bushHQ(v, false));
+    const dryT = variants(4, (v) => bushHQ(v + 5, true));
+    for (const r of c.bushes) {
+      const zid = c.zoneAt(c.fieldsAt(r.x, r.z).s).id;
+      const desert = zid === 'desert' || zid === 'canyon';
+      bushes.add((desert ? dryT : bushT)[r.v % 4], r.x, r.y - 0.1, r.z, r.yaw, r.scale);
+    }
+    this.addProps(bushes.build(foliageMat, false), 'bushes');
+    // Tufts stay on High (Ultra draws real grass blades around the camera instead).
+    const tufts = new ChunkMerger(120, true);
+    const tuftT = variants(3, (v) => withMat(tuftTemplate(v), PROP_MAT.matte));
+    const keep = Math.max(0.35, detail);
+    let k = 0;
+    for (const t of c.tufts) {
+      if ((k++ * 0.618) % 1 > keep) continue;
+      tufts.add(tuftT[t.v % 3], t.x, t.y - 0.05, t.z, t.yaw, t.scale);
+    }
+    this.addProps(tufts.build(propMat, false), 'tufts');
+  }
+
+  /** The texture set arrived (or went): rebuild the PBR prop material so rocks use the rock textures. */
+  private refreshPropMaterial(): void {
+    if (!this.propsHQ || !this.propMatHQ) return;
+    const old = this.propMatHQ;
+    const m = makePropMaterial(this.pbr);
+    this.propMatHQ = m;
+    this.propMats = this.propMats.filter((x) => x !== old).concat(m);
+    this.group.traverse((o) => {
+      if (o.userData.props && (o as THREE.Mesh).material === old) (o as THREE.Mesh).material = m;
+    });
+    old.dispose();
   }
 
   /** River water: one ribbon along the river polyline at the water level (one draw call). */
@@ -562,6 +803,9 @@ export class RaceCourse implements World {
     const ext = (i: number, j: number, d: number): THREE.Vector2 => pts[i].clone().add(pts[i].clone().sub(pts[j]).normalize().multiplyScalar(d));
     const line = [ext(0, 1, 10), ...pts, ext(pts.length - 1, pts.length - 2, 10)];
     const bs = [r.bs[0] - 10, ...r.bs, r.bs[r.bs.length - 1] + 10];
+    // Round 2: 12 columns across, each vertex knows the water depth there (shallow edges, foam, deep middle).
+    const K = 12;
+    const depth: number[] = [];
     for (let i = 0; i < line.length; i++) {
       const a = line[Math.max(0, i - 1)];
       const b = line[Math.min(line.length - 1, i + 1)];
@@ -570,18 +814,24 @@ export class RaceCourse implements World {
       const l = Math.hypot(dx, dz) || 1;
       const nx = -dz / l;
       const nz = dx / l;
-      for (const side of [-1, 1]) {
-        pos.push(line[i].x + nx * W * side, r.water, line[i].y + nz * W * side);
+      for (let k = 0; k <= K; k++) {
+        const side = (k / K) * 2 - 1;
+        const x = line[i].x + nx * W * side;
+        const z = line[i].y + nz * W * side;
+        pos.push(x, r.water, z);
         uv.push(((side + 1) * W) / 6, bs[i] / 6);
+        depth.push(r.water - c.heightAt(x, z));
       }
       if (i > 0) {
-        const k = (i - 1) * 2;
-        idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); // counter-clockwise from above (front face up)
+        const r0 = (i - 1) * (K + 1);
+        const r1 = i * (K + 1);
+        for (let k = 0; k < K; k++) idx.push(r0 + k, r0 + k + 1, r1 + k, r0 + k + 1, r1 + k + 1, r1 + k); // CCW from above
       }
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setAttribute('aDepth', new THREE.Float32BufferAttribute(depth, 1));
     geo.setIndex(idx);
     geo.computeVertexNormals();
     // Make sure every normal points up (whichever way the strip winds).
@@ -600,6 +850,8 @@ export class RaceCourse implements World {
       depthWrite: false,
     });
     this.disposables.push(mat, normal);
+    this.waterMats = { classic: mat, pbr: makeWaterPBRMaterial(normal) };
+    this.disposables.push(this.waterMats.pbr);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.renderOrder = 1;
     mesh.receiveShadow = true;
