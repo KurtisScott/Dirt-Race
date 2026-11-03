@@ -192,7 +192,9 @@ export class QualityManager {
 
   /** Feed one frame's real duration (ms). Called by the game loop. */
   sample(frameMs: number, now: number): void {
-    if (frameMs > 250) return; // tab switch / GC hiccup: ignore
+    // Tab switch / app in background: ignore. Frames of 250–1000 ms (a device managing only 1–4 fps on
+    // Ultra) must still count, or the slow prompt could never appear exactly where it is needed most.
+    if (frameMs > 1000) return;
     this.avgFrameMs += (frameMs - this.avgFrameMs) * 0.05;
     if (!this.enabled || now < this.warmupUntil) return;
     this.windowSum += frameMs;
