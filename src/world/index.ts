@@ -47,5 +47,11 @@ export async function createWorldAsync(ctx: GameContext, level: 'race' | 'test',
   const data = new CourseData();
   progress?.(0.55, 'Planting trees and stacking hay…');
   await breathe();
-  return new RaceCourse(ctx, data);
+  const course = new RaceCourse(ctx, data);
+  // High/Ultra: the photographic texture set (a few MB of WebP, precached for offline play).
+  if (ctx.quality.preset.terrainPBR > 0) {
+    progress?.(0.85, 'Painting the scenery…');
+    await course.loadLook((f) => progress?.(0.85 + f * 0.15, 'Painting the scenery…'));
+  }
+  return course;
 }

@@ -54,7 +54,7 @@ export const SURFACE_CODES: SurfaceType[] = ['asphalt', 'dirt', 'gravel', 'mud',
 const SC: Record<SurfaceType, number> = { asphalt: 0, dirt: 1, gravel: 2, mud: 3, sand: 4, water: 5, snow: 6 };
 
 /** Visual terrain layers (texture array order). Weights travel as 3 vec4 attributes (12 slots). */
-export const LAYERS = ['grass', 'dirt', 'gravel', 'mud', 'sand', 'rock', 'riverbed', 'field', 'snow', 'forest', 'redrock'] as const;
+export const LAYERS = ['grass', 'dirt', 'gravel', 'mud', 'sand', 'rock', 'riverbed', 'field', 'snow', 'forest', 'redrock', 'track'] as const;
 export type LayerName = (typeof LAYERS)[number];
 export const LAYER_SLOTS = 12;
 const L_GRASS = 0;
@@ -68,6 +68,7 @@ const L_FIELD = 7;
 const L_SNOW = 8;
 const L_FOREST = 9;
 const L_REDROCK = 10;
+const L_TRACK = 11;
 
 export interface Placement {
   x: number;
@@ -602,7 +603,7 @@ export class CourseData {
       const row = Math.sin((x * 0.7 + z * 0.35) * 0.9) > 0.2 ? 1 : 0;
       off[L_FIELD] = wFarm * (n2 > -0.1 ? 0.6 + 0.4 * row : 0.2);
     }
-    off[L_FIELD] += smoothstep(0.25, 0.6, n2) * 0.5 * (1 - wForest) * (1 - wSnow);
+    off[L_FIELD] += smoothstep(0.25, 0.6, n2) * 0.5 * (1 - wForest) * (1 - wSnow) * (1 - wCanyon) * (1 - wDesert);
     off[L_ROCK] += wRocky * smoothstep(0.15, 0.55, n1 * 0.5 + n2) * 0.9;
     off[L_GRAVEL] += wRocky * 0.25;
     off[L_SAND] += wDesert * 4;
@@ -625,12 +626,15 @@ export class CourseData {
       onRoad[L_GRAVEL] = 0.7;
       onRoad[L_REDROCK] = 0.3;
     } else if (zone === 'snow') {
-      // Packed snow with gravel showing through in the wheel tracks.
-      onRoad[L_SNOW] = 0.2 + wSnow * 0.45; // more snow where the physics surface is snow (snowW > 0.5)
-      onRoad[L_GRAVEL] = 1 - onRoad[L_SNOW];
+      // Packed, dirty snow with gravel and hardpack showing through — clearly darker than the white
+      // snow fields either side (Round 2: the old road was pale and blended in).
+      onRoad[L_SNOW] = 0.08 + wSnow * 0.12; // more snow where the physics surface is snow (snowW > 0.5)
+      onRoad[L_TRACK] = 0.45;
+      onRoad[L_GRAVEL] = 1 - onRoad[L_SNOW] - onRoad[L_TRACK];
     } else if (zone === 'desert') {
-      onRoad[L_SAND] = 1;
-      onRoad[L_DIRT] = 0.25;
+      // Hardpack track through the dunes (Round 2: was sand on sand, the road vanished).
+      onRoad[L_TRACK] = 0.8;
+      onRoad[L_SAND] = 0.2;
     } else onRoad[L_DIRT] = 1;
     for (let k = 0; k < LAYER_SLOTS; k++) out[k] = off[k] * (1 - road) + onRoad[k] * road * 2;
 
@@ -660,7 +664,7 @@ export class CourseData {
       }
     }
     // Steep slopes show rock (valley walls): red sandstone in the canyon, snow-dusted rock on the pass.
-    const steep = smoothstep(0.65, 0.95, slope) * (1 - 0.75 * wDesert);
+    const steep = smoothstep(0.8, 1.25, slope) * (1 - 0.75 * wDesert);
     if (steep > 0) {
       for (let k = 0; k < LAYER_SLOTS; k++) out[k] *= 1 - steep;
       out[L_ROCK] += steep * (1 - wCanyon) * (1 - wSnow * 0.4);

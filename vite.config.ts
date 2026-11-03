@@ -58,7 +58,7 @@ export default defineConfig({
       workbox: {
         // Precache everything the build emits, including the Rapier WASM (inlined in JS by -compat) and future audio/textures.
         globPatterns: ['**/*.{js,css,html,svg,png,webp,jpg,wasm,mp3,m4a,ogg,wav,aac,json,glb,bin,woff2}'],
-        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
+        maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
         cleanupOutdatedCaches: true,
         navigateFallback: 'index.html',
       },

@@ -142,11 +142,23 @@ const LAYER_FNS: ((u: number, v: number, o: RGB, px: number) => void)[] = [
     o[1] = (98 + strata * 22) * k;
     o[2] = (66 + strata * 12) * k;
   },
+  // 11 track (Round 2): packed road hardpack — darker and browner than the sand/snow around it so the
+  // desert and snowy-pass roads read clearly.
+  (u, v, o, px) => {
+    const n = tn(u, v, 5, 3, 101);
+    const grit = hash2(Math.floor(u * px), Math.floor(v * px), 103) - 0.5;
+    const w = worley(u * 30, v * 30, 30, 105);
+    const pebble = w.f1 < 0.2 ? 0.14 * (1 - w.f1 / 0.2) * (w.id - 0.4) : 0;
+    const k = 1 + n * 0.14 + grit * 0.1 + pebble;
+    o[0] = 128 * k;
+    o[1] = 100 * k;
+    o[2] = 72 * k;
+  },
 ];
 
 export const TERRAIN_LAYER_COUNT = LAYER_FNS.length;
 
-/** The terrain layers (11) as one sRGB DataArrayTexture (mipmapped, repeat-wrapped). */
+/** The terrain layers (12) as one sRGB DataArrayTexture (mipmapped, repeat-wrapped). */
 export function makeTerrainLayers(size: number): THREE.DataArrayTexture {
   const n = LAYER_FNS.length;
   const data = new Uint8Array(size * size * 4 * n);

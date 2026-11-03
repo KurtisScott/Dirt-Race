@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { Group, groups, RAPIER, type PhysicsWorld } from '../core/physics';
 import { CELL, type CourseData, LAYER_SLOTS, WALL_END } from './course';
+import type { PBRSet } from './pbrTextures';
+import { makeTerrainPBRMaterial } from './terrainPBR';
 import { makeTerrainLayers, TERRAIN_LAYER_COUNT } from './textures';
 
 /**
@@ -20,8 +22,10 @@ const FAR_STEP = 4;
  * - `lite`: same splat without the macro sample (Low: one texture fetch fewer per pixel).
  * - `simple`: no textures at all, per-vertex blend of each layer's average colour. The safety net for GPUs
  *   or browsers where the texture-array shader fails to compile or `sampler2DArray` is unsupported.
+ * - `pbr` (Round 2, High/Ultra): photographic-style PBR splat (world/terrainPBR.ts) from the build-time
+ *   texture set; needs `setPBR(set)` first (falls back to `full` until then).
  */
-export type TerrainShading = 'full' | 'lite' | 'simple';
+export type TerrainShading = 'full' | 'lite' | 'simple' | 'pbr';
 
 export interface TerrainHandles {
   mesh: THREE.Group;
@@ -30,6 +34,8 @@ export interface TerrainHandles {
   readonly shading: TerrainShading;
   /** Swap every chunk to another shading mode (cheap: no geometry rebuild). */
   setShading(mode: TerrainShading): void;
+  /** Provide (or drop) the PBR texture set used by the `pbr` mode. */
+  setPBR(set: PBRSet | null): void;
   dispose(): void;
 }
 
@@ -48,11 +54,13 @@ export function createTerrainCollider(physics: PhysicsWorld, c: CourseData): RAP
 export function createTerrainMesh(c: CourseData, textureSize: number, shading: TerrainShading = 'full'): TerrainHandles {
   // The layer texture is only built when a splat mode needs it (the simple mode works without it).
   let layers: THREE.DataArrayTexture | null = null;
+  let pbrSet: PBRSet | null = null;
   const materials = new Map<TerrainShading, THREE.Material>();
   const getMaterial = (mode: TerrainShading): THREE.Material => {
     let m = materials.get(mode);
     if (!m) {
       if (mode === 'simple') m = makeSimpleTerrainMaterial(textureSize);
+      else if (mode === 'pbr') m = makeTerrainPBRMaterial(pbrSet!);
       else {
         layers ??= makeTerrainLayers(textureSize);
         m = makeTerrainMaterial(layers, mode === 'lite');
@@ -61,7 +69,8 @@ export function createTerrainMesh(c: CourseData, textureSize: number, shading: T
     }
     return m;
   };
-  let current = shading;
+  if (shading === 'pbr') shading = 'full'; // until setPBR() provides the textures
+  let current: TerrainShading = shading;
   const material = getMaterial(shading);
   const group = new THREE.Group();
   group.name = 'terrain';
@@ -121,15 +130,28 @@ export function createTerrainMesh(c: CourseData, textureSize: number, shading: T
     get shading() {
       return current;
     },
+    setPBR(set) {
+      if (set === pbrSet) return;
+      const old = materials.get('pbr');
+      if (old) (old.dispose(), materials.delete('pbr'));
+      pbrSet = set;
+      if (current === 'pbr' && !set) handles.setShading('full');
+    },
     setShading(mode) {
-      if (mode === current) return;
+      if (mode === 'pbr' && !pbrSet) mode = 'full';
+      if (mode === current && materials.get(mode) === handles.material) return;
       current = mode;
       const m = getMaterial(mode);
       handles.material = m;
       group.traverse((o) => {
         if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).material = m;
       });
-      // Free the texture array when it is no longer used (simple mode).
+      // Free the procedural layer array when it is no longer used (simple / pbr modes).
+      if (mode === 'simple' || mode === 'pbr') {
+        for (const [k, mm] of materials) if (k !== mode) (mm.dispose(), materials.delete(k));
+        layers?.dispose();
+        layers = null;
+      }
       if (mode === 'simple') {
         for (const [k, mm] of materials) if (k !== 'simple') (mm.dispose(), materials.delete(k));
         layers?.dispose();
@@ -163,6 +185,8 @@ function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: numbe
   const wA = new Uint8Array(nV * 4);
   const wB = new Uint8Array(nV * 4);
   const wC = new Uint8Array(nV * 4);
+  // Round 2: road weight (0..1) and signed lateral offset (/24 m) for the PBR shader's wheel ruts and edges.
+  const rd = new Int8Array(nV * 2);
   const H = c.heights;
   const NZ = c.NZ;
   const hAt = (i: number, j: number): number => H[THREE.MathUtils.clamp(i, 0, NZ - 1) + THREE.MathUtils.clamp(j, 0, c.NX - 1) * NZ];
@@ -186,6 +210,13 @@ function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: numbe
       wA[v * 4 + k] = Math.round(wts[k] * 255);
       wB[v * 4 + k] = Math.round(wts[k + 4] * 255);
       wC[v * 4 + k] = Math.round(wts[k + 8] * 255);
+    }
+    {
+      const k = THREE.MathUtils.clamp(i, 0, NZ - 1) + THREE.MathUtils.clamp(j, 0, c.NX - 1) * NZ;
+      const hw = c.halfWidthAt(c.nearS[k]);
+      const road = 1 - THREE.MathUtils.smoothstep(c.dist[k], hw - 0.4, hw + 1.6);
+      rd[v * 2] = Math.round(road * 127);
+      rd[v * 2 + 1] = Math.round(THREE.MathUtils.clamp(c.lat[k] / 24, -1, 1) * 127);
     }
     v++;
   };
@@ -236,6 +267,7 @@ function buildChunk(c: CourseData, j0: number, i0: number, j1: number, i1: numbe
   geo.setAttribute('wA', new THREE.BufferAttribute(wA.subarray(0, v * 4), 4, true));
   geo.setAttribute('wB', new THREE.BufferAttribute(wB.subarray(0, v * 4), 4, true));
   geo.setAttribute('wC', new THREE.BufferAttribute(wC.subarray(0, v * 4), 4, true));
+  geo.setAttribute('aRoad', new THREE.BufferAttribute(rd.subarray(0, v * 2), 2, true));
   geo.setIndex(nV > 65535 ? new THREE.Uint32BufferAttribute(idx, 1) : new THREE.Uint16BufferAttribute(idx, 1));
   geo.computeBoundingSphere();
   geo.computeBoundingBox();
@@ -254,6 +286,7 @@ function mergeChunkParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   const wA = new Uint8Array(nv * 4);
   const wB = new Uint8Array(nv * 4);
   const wC = new Uint8Array(nv * 4);
+  const rd = new Int8Array(nv * 2);
   const idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
   let ov = 0;
   let oi = 0;
@@ -264,6 +297,7 @@ function mergeChunkParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
     wA.set(p.attributes.wA.array as Uint8Array, ov * 4);
     wB.set(p.attributes.wB.array as Uint8Array, ov * 4);
     wC.set(p.attributes.wC.array as Uint8Array, ov * 4);
+    rd.set(p.attributes.aRoad.array as Int8Array, ov * 2);
     const src = p.index!.array;
     for (let k = 0; k < src.length; k++) idx[oi + k] = src[k] + ov;
     ov += n;
@@ -276,6 +310,7 @@ function mergeChunkParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   g.setAttribute('wA', new THREE.BufferAttribute(wA, 4, true));
   g.setAttribute('wB', new THREE.BufferAttribute(wB, 4, true));
   g.setAttribute('wC', new THREE.BufferAttribute(wC, 4, true));
+  g.setAttribute('aRoad', new THREE.BufferAttribute(rd, 2, true));
   g.setIndex(new THREE.BufferAttribute(idx, 1));
   g.computeBoundingSphere();
   g.computeBoundingBox();
@@ -327,6 +362,7 @@ function makeTerrainMaterial(layers: THREE.DataArrayTexture, lite: boolean): THR
           if (vWC.x > 0.01) { c += tl(8.0, uv * 0.8) * vWC.x; wsum += vWC.x; }
           if (vWC.y > 0.01) { c += tl(9.0, uv) * vWC.y; wsum += vWC.y; }
           if (vWC.z > 0.01) { c += tl(10.0, uvR) * vWC.z; wsum += vWC.z; }
+          if (vWC.w > 0.01) { c += tl(11.0, uv) * vWC.w; wsum += vWC.w; }
           c /= max(wsum, 0.001);
           ${
             lite
@@ -339,7 +375,7 @@ function makeTerrainMaterial(layers: THREE.DataArrayTexture, lite: boolean): THR
         }`,
       );
   };
-  mat.customProgramCacheKey = () => (lite ? 'dirt-race-terrain-lite-v2' : 'dirt-race-terrain-v2');
+  mat.customProgramCacheKey = () => (lite ? 'dirt-race-terrain-lite-v3' : 'dirt-race-terrain-v3');
   return mat;
 }
 
@@ -392,10 +428,10 @@ function makeSimpleTerrainMaterial(textureSize: number): THREE.MeshLambertMateri
         '#include <begin_vertex>',
         `#include <begin_vertex>
         {
-          float ws = dot(wA, vec4(1.0)) + dot(wB, vec4(1.0)) + dot(wC.xyz, vec3(1.0));
+          float ws = dot(wA, vec4(1.0)) + dot(wB, vec4(1.0)) + dot(wC, vec4(1.0));
           vec3 c = uPal[0] * wA.x + uPal[1] * wA.y + uPal[2] * wA.z + uPal[3] * wA.w
                  + uPal[4] * wB.x + uPal[5] * wB.y + uPal[6] * wB.z + uPal[7] * wB.w
-                 + uPal[8] * wC.x + uPal[9] * wC.y + uPal[10] * wC.z;
+                 + uPal[8] * wC.x + uPal[9] * wC.y + uPal[10] * wC.z + uPal[11] * wC.w;
           c /= max(ws, 0.001);
           c *= 0.9 + 0.1 * sin(position.x * 0.71) * sin(position.z * 0.53 + 1.3) + 0.06 * sin(position.x * 0.05 + position.z * 0.04);
           vTerr = c;
@@ -405,6 +441,6 @@ function makeSimpleTerrainMaterial(textureSize: number): THREE.MeshLambertMateri
       .replace('#include <common>', `#include <common>\n        varying vec3 vTerr;`)
       .replace('#include <map_fragment>', `diffuseColor.rgb *= vTerr;`);
   };
-  mat.customProgramCacheKey = () => 'dirt-race-terrain-simple-v2';
+  mat.customProgramCacheKey = () => 'dirt-race-terrain-simple-v3';
   return mat;
 }
