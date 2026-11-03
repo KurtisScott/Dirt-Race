@@ -5,10 +5,10 @@ import { N8AOPostPass } from 'n8ao';
 /**
  * Round 2 post-processing (High = 'light', Ultra = 'full'), on the `postprocessing` package:
  *
- *   RenderPass (HalfFloat HDR buffer; MSAA ×4 on High)
+ *   RenderPass (HalfFloat HDR buffer)
  *   → N8AO ambient occlusion (Ultra, half resolution, depth-only: no extra scene pass)
  *   → EffectPass: bloom (mip blur, HDR threshold) · speed blur (Ultra) · exposure · AgX tone mapping · grade + vignette
- *   → EffectPass: SMAA (Ultra)
+ *   → EffectPass: SMAA (medium preset on Ultra, low on High)
  *
  * The renderer's own tone mapping is off while this is active (it all happens here).
  */
@@ -126,7 +126,7 @@ export class PostFX {
     const full = mode === 'full';
     this.composer = new EffectComposer(renderer, {
       frameBufferType: THREE.HalfFloatType,
-      multisampling: full ? 0 : 4,
+      multisampling: 0,
       stencilBuffer: false,
     });
     this.composer.addPass(new RenderPass(scene, camera));
@@ -142,11 +142,15 @@ export class PostFX {
       c.intensity = 1.6;
       c.gammaCorrection = false;
       c.color = new THREE.Color(0x0a0c10);
+      // No transparency pass: it re-renders the transparent objects (water, particles) into two more
+      // full-resolution targets every frame (~48 MB, a second partial scene render).
+      c.transparencyAware = false;
+      (ao as unknown as { autoDetectTransparency: boolean }).autoDetectTransparency = false;
       patchN8AOTargets(ao);
       this.ao = ao;
       this.composer.addPass(ao as unknown as EffectPass);
     }
-    const bloom = new BloomEffect({ mipmapBlur: true, luminanceThreshold: 1.1, luminanceSmoothing: 0.25, intensity: full ? 0.55 : 0.4, radius: 0.7, levels: full ? 6 : 4 });
+    const bloom = new BloomEffect({ mipmapBlur: true, luminanceThreshold: 1.1, luminanceSmoothing: 0.25, intensity: full ? 0.55 : 0.4, radius: 0.7, levels: full ? 6 : 4, resolutionScale: 0.5 });
     this.exposure = new ExposureEffect(1.15);
     const tone = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC });
     const grade = new GradeEffect();
@@ -158,7 +162,7 @@ export class PostFX {
     }
     effects.push(this.exposure, tone, grade);
     this.composer.addPass(new EffectPass(camera, ...effects));
-    if (full) this.composer.addPass(new EffectPass(camera, new SMAAEffect({ preset: SMAAPreset.MEDIUM })));
+    this.composer.addPass(new EffectPass(camera, new SMAAEffect({ preset: full ? SMAAPreset.MEDIUM : SMAAPreset.LOW })));
   }
 
   /** 0..1 radial blur strength (Ultra only; set from the player's speed). */

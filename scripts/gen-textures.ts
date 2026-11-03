@@ -4,7 +4,7 @@
 //
 // Output (public/tex/):
 //   terrain-albedo-<N>.webp   12 layers stacked vertically (N × 12N), sRGB albedo with baked cavity AO
-//   terrain-nh-<N>.webp       same layout: R,G = tangent-space normal x,y; B = height (0..1)
+//   terrain-nh-512.webp       same layout (512 px only): R,G = tangent-space normal x,y; B = height (0..1)
 //   asphalt-albedo-<N>.webp / asphalt-nh-<N>.webp   road surface (markings are drawn in the shader)
 //   bark-albedo-512.webp / bark-nh-512.webp, foliage-512.webp (+ alpha), rock-albedo-512.webp ...
 // for N = 1024 (Ultra) and 512 (High). Layer order = world/course.ts LAYERS (+ 'track').
@@ -624,10 +624,11 @@ for (const n of (process.env.SIZES ?? "1024,512").split(",").map(Number)) {
     console.log(`[gen-textures] ${name} ${n}px ${Date.now() - t1} ms`);
   }
   total += await writeStack('terrain-albedo', n, albedo, 82);
-  total += await writeStack('terrain-nh', n, nh, 88);
+  // Normal/height maps ship at 512 px only (the game uses 512 normals even on Ultra: GPU memory).
+  if (n === 512) total += await writeStack('terrain-nh', n, nh, 88);
   const a = asphalt(n);
   total += await writeStack('asphalt-albedo', n, [a.albedo], 84);
-  total += await writeStack('asphalt-nh', n, [a.nh], 88);
+  if (n === 512) total += await writeStack('asphalt-nh', n, [a.nh], 88);
   if (preview && n === 1024) {
     // Contact sheet (not shipped): 4 × 3 layers at 256 px + asphalt.
     const P = 256;

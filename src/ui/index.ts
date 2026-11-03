@@ -292,7 +292,6 @@ export class UI {
             } else {
               updateSettings({ autoQuality: false });
               this.handlers.onQuality(v as QualityLevel);
-              if (v === 'high') this.toast('High graphics: smoothest edges after the game restarts');
               if (v === 'ultra') this.toast('Ultra graphics: the most realistic look (may be slower)');
             }
           } else if (kind === 'steer') updateSettings({ steerButtons: v === 'buttons' });

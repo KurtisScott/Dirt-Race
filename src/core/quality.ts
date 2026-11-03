@@ -27,7 +27,7 @@ export interface QualityPreset {
   post: 'none' | 'light' | 'full';
   /** Soft-shadow filter radius in shadow-map texels (PCF). */
   shadowRadius: number;
-  /** Resolution of the photographic PBR terrain set (albedo + normal/roughness/height); 0 = procedural layers. */
+  /** Resolution of the photographic PBR terrain albedo; 0 = procedural layers. Normal/height maps are always 512. */
   terrainPBR: 0 | 512 | 1024;
   /** Instanced grass blades around the camera (count; 0 = off). */
   grass: number;
@@ -80,7 +80,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     shadowRange: 45,
     viewDistance: 700,
     fogNear: 190,
-    antialias: true,
+    antialias: false, // SMAA in the post chain (MSAA ×4 on half-float targets cost ~100 MB)
     detail: 1,
     textureSize: 1024,
     pbr: true,
@@ -95,8 +95,8 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     level: 'ultra',
     pixelRatioCap: 1.5,
     shadows: true,
-    shadowMapSize: 4096,
-    shadowRange: 60,
+    shadowMapSize: 3072, // 4096 would cost 128 MB (colour + depth targets): too much for a 3 GB iPad
+    shadowRange: 55,
     viewDistance: 900,
     fogNear: 200,
     antialias: false, // SMAA in the post chain instead

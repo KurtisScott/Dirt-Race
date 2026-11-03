@@ -44,7 +44,9 @@ export function forgetPBRSet(size: number): void {
 
 async function load(size: number, onProgress?: (f: number) => void): Promise<PBRSet> {
   if (typeof document === 'undefined' || typeof fetch !== 'function') throw new Error('no DOM');
-  const url = (name: string): string => new URL(`tex/${name}-${size}.webp`, document.baseURI).href;
+  // Normal/height maps stay at 512 px even on Ultra (they are far less visible than albedo; saves ~50 MB of GPU memory).
+  const NH = 512;
+  const url = (name: string): string => new URL(`tex/${name}-${name.endsWith('-nh') ? NH : size}.webp`, document.baseURI).href;
   const names = ['terrain-albedo', 'terrain-nh', 'asphalt-albedo', 'asphalt-nh'];
   let done = 0;
   const images = await Promise.all(
@@ -56,9 +58,9 @@ async function load(size: number, onProgress?: (f: number) => void): Promise<PBR
   );
   const [ta, tn, aa, an] = images;
   const albedo = arrayTexture(ta, size, PBR_LAYER_COUNT, true);
-  const nh = arrayTexture(tn, size, PBR_LAYER_COUNT, false);
+  const nh = arrayTexture(tn, NH, PBR_LAYER_COUNT, false);
   const asphaltAlbedo = flatTexture(aa, size, true);
-  const asphaltNH = flatTexture(an, size, false);
+  const asphaltNH = flatTexture(an, NH, false);
   for (const i of images) if ('close' in i) i.close();
   return {
     size,
