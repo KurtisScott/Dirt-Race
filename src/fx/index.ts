@@ -140,7 +140,7 @@ export class Effects implements System {
     blob.name = 'fx-blob-shadow';
     blob.renderOrder = 1;
     blob.matrixAutoUpdate = false;
-    blob.visible = !this.ctx.quality.preset.shadows;
+    blob.visible = !this.ctx.quality.preset.shadows || this.ctx.quality.preset.pbr;
     this.ctx.renderer.scene.add(blob);
     this.tracked.push({ v, blob, prev: [0, 1, 2, 3].map(() => new THREE.Vector3()), had: [false, false, false, false], acc: [0, 0, 0, 0], exhaustAcc: 0, smokeAcc: 0 });
   }
@@ -175,10 +175,15 @@ export class Effects implements System {
   private applyQuality(): void {
     const q = this.ctx.quality.preset;
     this.detail = q.detail;
+    this.particles.setLit(q.pbr);
     this.particles.limit = Math.round(MAX_PARTICLES * q.detail);
     this.debris.limit = Math.round(MAX_DEBRIS * Math.max(0.5, q.detail));
-    for (const t of this.tracked) t.blob.visible = !q.shadows;
+    // Round 2: on High/Ultra the blob stays as a soft contact-occlusion pad under the car (real shadows too).
+    for (const t of this.tracked) t.blob.visible = !q.shadows || q.pbr;
+    this.blobMat.opacity = q.shadows ? 0.55 : 1;
+    this.blobContact = q.shadows && q.pbr;
   }
+  private blobContact = false;
 
   update(dt: number): void {
     if (dt <= 0) return;
@@ -323,7 +328,8 @@ export class Effects implements System {
     // Spread out (and so look fainter) as the car jumps higher.
     const h = Math.max(0, v.position.y - gy - v.spec.size.height * 0.5);
     const spread = 1 + clamp(h / 4, 0, 0.85);
-    _s.set(v.spec.size.width * 1.35 * spread, 1, v.spec.size.length * 1.2 * spread);
+    const k = this.blobContact ? 0.82 : 1;
+    _s.set(v.spec.size.width * 1.35 * spread * k, 1, v.spec.size.length * 1.2 * spread * k);
     _p.set(x, gy + 0.06, z);
     t.blob.matrix.compose(_p, _q, _s);
     t.blob.matrixWorldNeedsUpdate = true;

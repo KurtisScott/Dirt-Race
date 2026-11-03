@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries, toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { settings } from '../../core/settings';
+import { events } from '../../core/events';
+import { look } from '../../core/look';
 import type { VehicleParams } from '../types';
 
 /**
@@ -63,30 +64,144 @@ function makeEnvMap(): THREE.CubeTexture {
 
 export type MatKey = 'paint' | 'glass' | 'trim' | 'chrome' | 'lamp' | 'tail';
 
-let shared: Record<Exclude<MatKey, 'paint' | 'tail'>, THREE.Material> | null = null;
-/** Materials shared by every vehicle (never disposed). Trim and lamp use vertex colours. */
-export function sharedMaterials(): Record<Exclude<MatKey, 'paint' | 'tail'>, THREE.Material> {
-  if (shared) return shared;
-  const env = typeof document !== 'undefined' ? vehicleEnvMap() : null;
-  shared = {
+type SharedKey = Exclude<MatKey, 'paint' | 'tail'> | 'tyre';
+let shared: Record<SharedKey, THREE.Material> | null = null;
+
+/** Classic (Low/Medium) shared materials: as before Round 2. */
+function classicShared(env: THREE.CubeTexture | null): Record<SharedKey, THREE.Material> {
+  const trim = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, metalness: 0.05, envMap: env, envMapIntensity: 0.35 });
+  return {
     glass: new THREE.MeshStandardMaterial({ color: 0x1c2a36, roughness: 0.06, metalness: 0.55, envMap: env, envMapIntensity: 1.25 }),
-    trim: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, metalness: 0.05, envMap: env, envMapIntensity: 0.35 }),
+    trim,
+    tyre: trim,
     chrome: new THREE.MeshStandardMaterial({ color: 0xe3e8ee, roughness: 0.16, metalness: 1, envMap: env, envMapIntensity: 1.1 }),
     lamp: new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
   };
-  // Named so a later graphics pass can find and upgrade them (one shared instance per role).
-  for (const [k, m] of Object.entries(shared)) m.name = `vehicle-${k}`;
+}
+
+/**
+ * Round 2 PBR shared materials (High/Ultra, lit by the sky environment): dark tinted glass with Fresnel
+ * reflections, polished chrome, satin plastic trim, rubber tyres with a procedural tread / sidewall
+ * normal pattern, HDR lamps (they bloom).
+ */
+function pbrShared(): Record<SharedKey, THREE.Material> {
+  const lamp = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, color: new THREE.Color(2.2, 2.2, 2.2) });
+  return {
+    glass: new THREE.MeshPhysicalMaterial({ color: 0x0b1116, roughness: 0.02, metalness: 0, envMapIntensity: 1.5, clearcoat: 1, clearcoatRoughness: 0.0, ior: 1.52, specularIntensity: 1 }),
+    trim: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.08, envMapIntensity: 0.7 }),
+    tyre: makeTyreMaterial(),
+    chrome: new THREE.MeshStandardMaterial({ color: 0xf2f4f7, roughness: 0.08, metalness: 1, envMapIntensity: 1.2 }),
+    lamp,
+  };
+}
+
+/** Rubber with tread grooves across the tyre face and fine sidewall rings (wheel-local space, axle = X). */
+function makeTyreMaterial(): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 });
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\n varying vec3 vTyre; varying vec3 vTyreN; varying vec3 vTanV; varying vec3 vRadV;')
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\n vTyre = position; vTyreN = normal; vTanV = normalMatrix * normalize(vec3(0.0, -position.z, position.y) + 1e-5); vRadV = normalMatrix * normalize(vec3(0.0, position.y, position.z) + 1e-5);',
+      );
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\n varying vec3 vTyre; varying vec3 vTyreN; varying vec3 vTanV; varying vec3 vRadV;')
+      .replace(
+        '#include <normal_fragment_maps>',
+        `{
+          float r = length(vTyre.yz);
+          float ang = atan(vTyre.z, vTyre.y);
+          float tread = 1.0 - smoothstep(0.35, 0.6, abs(vTyreN.x));          // facing outward (the tread)
+          float g = abs(fract(ang * 9.549 + abs(vTyre.x) * 9.0) - 0.5);       // 60 chevron grooves
+          float groove = (1.0 - smoothstep(0.08, 0.16, g)) * tread;
+          float ring = (1.0 - tread) * (0.5 + 0.5 * sin(r * 260.0));          // sidewall moulding rings
+          diffuseColor.rgb *= 1.0 - 0.45 * groove + 0.06 * ring;
+          normal = normalize(normal + normalize(vTanV) * (g - 0.25) * tread + normalize(vRadV) * ring * 0.04);
+        }`,
+      )
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = 0.9;');
+  };
+  m.customProgramCacheKey = () => 'dirt-race-tyre-v1';
+  m.name = 'vehicle-tyre';
+  return m;
+}
+
+/** Materials shared by every vehicle (never disposed). Trim and lamp use vertex colours. */
+export function sharedMaterials(): Record<SharedKey, THREE.Material> {
+  if (shared) return shared;
+  const hasDom = typeof document !== 'undefined';
+  const classic = classicShared(hasDom ? vehicleEnvMap() : null);
+  const pbr = hasDom ? pbrShared() : classic;
+  // One stable object per role; its entries are swapped when the lighting tier changes, so models built
+  // later pick the right ones (cars are rebuilt every race).
+  shared = { ...(look.pbr ? pbr : classic) };
+  for (const [k, m] of Object.entries(classic)) m.name ||= `vehicle-${k}`;
+  for (const [k, m] of Object.entries(pbr)) m.name ||= `vehicle-${k}`;
+  events.on('quality:changed', () => Object.assign(shared!, look.pbr ? pbr : classic));
   return shared;
 }
 
 /**
  * Car paint. Vertex colours carry the paint + accent (stripes, two-tone roof), so one material covers
- * the whole painted body. Clearcoat (MeshPhysicalMaterial) only on High graphics.
+ * the whole painted body.
+ * - Low/Medium: plain glossy Standard material with the little cube env map (as before).
+ * - High/Ultra (Round 2): clearcoat + metallic flake sparkle under the coat, and dirt build-up on the lower
+ *   body (`userData.dirt.value` 0..1, `userData.dirtColor`), driven by the model's animate() from the
+ *   surface the car drives on.
  */
 export function paintMaterial(): THREE.MeshStandardMaterial {
-  const env = typeof document !== 'undefined' ? vehicleEnvMap() : null;
-  if (settings.quality === 'high') {
-    return new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.42, metalness: 0.15, clearcoat: 1, clearcoatRoughness: 0.07, envMap: env, envMapIntensity: 1 });
+  const env = typeof document !== 'undefined' && !look.pbr ? vehicleEnvMap() : null;
+  if (look.pbr) {
+    const m = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.34, metalness: 0.22, clearcoat: 1, clearcoatRoughness: 0.035, envMapIntensity: 1.1 });
+    const dirt = { value: 0 };
+    const dirtColor = { value: new THREE.Color(0.32, 0.24, 0.16) };
+    m.userData.dirt = dirt;
+    m.userData.dirtColor = dirtColor;
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uDirt = dirt;
+      sh.uniforms.uDirtColor = dirtColor;
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\n varying vec3 vCarPos;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n vCarPos = position;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          varying vec3 vCarPos; uniform float uDirt; uniform vec3 uDirtColor; float carDirt;
+          float ch31(vec3 p) { p = fract(p * vec3(443.897, 441.423, 437.195)); p += dot(p, p.yzx + 19.19); return fract((p.x + p.y) * p.z); }
+          float cvn(vec3 p) { vec3 i = floor(p); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(mix(ch31(i), ch31(i + vec3(1,0,0)), f.x), mix(ch31(i + vec3(0,1,0)), ch31(i + vec3(1,1,0)), f.x), f.y),
+                       mix(mix(ch31(i + vec3(0,0,1)), ch31(i + vec3(1,0,1)), f.x), mix(ch31(i + vec3(0,1,1)), ch31(i + vec3(1,1,1)), f.x), f.y), f.z); }`,
+        )
+        .replace(
+          '#include <map_fragment>',
+          `#include <map_fragment>
+          {
+            // Dirt: thickest low down and behind the wheels, patchy, rising with uDirt.
+            float n = cvn(vCarPos * 7.0) * 0.6 + cvn(vCarPos * 23.0) * 0.4;
+            float line = 0.35 + uDirt * 0.75 + (n - 0.5) * 0.35;
+            carDirt = uDirt * smoothstep(line, line - 0.35, vCarPos.y) * smoothstep(0.25, 0.6, n + uDirt * 0.3);
+            diffuseColor.rgb = mix(diffuseColor.rgb, uDirtColor * (0.8 + 0.4 * n), clamp(carDirt * 1.4, 0.0, 0.92));
+          }`,
+        )
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = mix(roughnessFactor, 0.95, clamp(carDirt * 1.5, 0.0, 1.0));')
+        .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n metalnessFactor *= 1.0 - clamp(carDirt * 1.5, 0.0, 1.0);')
+        .replace(
+          '#include <normal_fragment_maps>',
+          `#include <normal_fragment_maps>
+          {
+            // Metallic flake: tiny facets under the clear coat catch the light at different angles.
+            vec3 fp = floor(vCarPos * 900.0);
+            vec3 fl = vec3(ch31(fp), ch31(fp + 7.1), ch31(fp + 3.3)) - 0.5;
+            normal = normalize(normal + fl * 0.05 * (1.0 - clamp(carDirt * 2.0, 0.0, 1.0)));
+          }`,
+        )
+        .replace('#include <clearcoat_normal_fragment_maps>', '#include <clearcoat_normal_fragment_maps>')
+        .replace('#include <lights_physical_fragment>', '#include <lights_physical_fragment>\n material.clearcoat *= 1.0 - clamp(carDirt * 1.6, 0.0, 1.0);');
+    };
+    m.customProgramCacheKey = () => 'dirt-race-paint-v1';
+    return m;
   }
   // Low metalness keeps the paint bright and saturated against the terrain (metal darkens the diffuse colour).
   return new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.08, envMap: env, envMapIntensity: 0.9 });
@@ -423,7 +538,7 @@ export interface WheelStyle {
  * Builds a wheel: lathed tyre (rounded section, optional knobbly tread), recessed rim face, chrome lip,
  * spokes and hub. Returns a group centred on the axle (axle along X, outer face towards +X).
  */
-export function buildWheel(st: WheelStyle, mats: Record<'trim' | 'chrome', THREE.Material>): { group: THREE.Group; geos: THREE.BufferGeometry[] } {
+export function buildWheel(st: WheelStyle, mats: Record<'trim' | 'chrome', THREE.Material> & { tyre?: THREE.Material }): { group: THREE.Group; geos: THREE.BufferGeometry[] } {
   const R = st.radius;
   const w = st.width;
   const rim = R * st.rim;
@@ -473,7 +588,10 @@ export function buildWheel(st: WheelStyle, mats: Record<'trim' | 'chrome', THREE
     n = toCreasedNormals(n, crease);
     return n;
   };
-  trimGeos.push(colorize(prep(tyre, lug > 0 ? 1.2 : 1.0), C.rubber));
+  // Round 2: the tyre is its own mesh when a separate tyre material exists (tread shader on High/Ultra).
+  const tyreGeo = colorize(prep(tyre, lug > 0 ? 1.2 : 1.0), C.rubber);
+  const ownTyre = !!mats.tyre && mats.tyre !== mats.trim;
+  if (!ownTyre) trimGeos.push(tyreGeo);
   if (st.whitewall) {
     const ww = new THREE.RingGeometry(rim * 1.08, rim + (R - rim) * 0.62, seg, 1).rotateY(Math.PI / 2).translate(hw + 0.004, 0, 0);
     trimGeos.push(colorize(prep(ww), C.white));
@@ -517,6 +635,12 @@ export function buildWheel(st: WheelStyle, mats: Record<'trim' | 'chrome', THREE
   const tm = new THREE.Mesh(tg, mats.trim);
   tm.castShadow = true;
   group.add(tm, new THREE.Mesh(cg, mats.chrome));
+  if (ownTyre) {
+    const ty = new THREE.Mesh(tyreGeo, mats.tyre);
+    ty.castShadow = true;
+    group.add(ty);
+    return { group, geos: [tg, cg, tyreGeo] };
+  }
   return { group, geos: [tg, cg] };
 }
 

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { look } from '../../core/look';
 import type { VehicleKind } from '../../core/types';
 import type { VehicleModel } from '../model';
 import type { VehicleParams, VehicleSpec, VehicleState } from '../types';
@@ -502,6 +503,17 @@ function accentFor(kind: VehicleKind, paint: number): number {
 }
 
 const BRAKE_ON = new THREE.Color(C.tail).multiplyScalar(1.7);
+/** Round 2 dirt build-up per surface: rate per second at speed, the most it can build up to, its colour (linear). */
+const DIRT_RATE: Partial<Record<string, number>> = { dirt: 0.012, gravel: 0.008, mud: 0.07, sand: 0.015, snow: 0.01, water: -0.04 };
+const DIRT_MAX: Partial<Record<string, number>> = { dirt: 0.6, gravel: 0.5, mud: 1, sand: 0.6, snow: 0.45 };
+const DIRT_COLOR: Record<string, THREE.Color> = {
+  dirt: new THREE.Color(0.3, 0.22, 0.14),
+  gravel: new THREE.Color(0.32, 0.29, 0.25),
+  mud: new THREE.Color(0.13, 0.09, 0.06),
+  sand: new THREE.Color(0.55, 0.43, 0.29),
+  snow: new THREE.Color(0.75, 0.78, 0.82),
+  water: new THREE.Color(0.3, 0.22, 0.14),
+};
 const BRAKE_OFF = new THREE.Color(C.tail).multiplyScalar(0.75);
 
 /** Build one end's bumper parts into a pivot group hinged at its +X (left) end, so the right end can drop. */
@@ -625,6 +637,18 @@ export function buildVehicleModel(spec: VehicleSpec, paint: number, p: VehiclePa
       if (b !== braking) {
         braking = b;
         tailMat.color.copy(b ? BRAKE_ON : BRAKE_OFF);
+        if (look.pbr) tailMat.color.multiplyScalar(b ? 2.6 : 1.2); // HDR: brake lights bloom on High/Ultra
+      }
+      // Round 2 dirt build-up (High/Ultra paint): grows while driving on loose ground, faster in mud.
+      const dirt = paintMat.userData.dirt as { value: number } | undefined;
+      if (dirt && state.wheelsOnGround > 0) {
+        const rate = DIRT_RATE[state.surface] ?? 0;
+        const v = Math.min(1, Math.abs(state.speed) / 12);
+        if (rate < 0) dirt.value = Math.max(0.15, dirt.value + rate * v * dt); // a splash rinses some off
+        else if (rate > 0) {
+          dirt.value = Math.min(DIRT_MAX[state.surface] ?? 1, dirt.value + rate * v * dt);
+          (paintMat.userData.dirtColor as { value: THREE.Color }).value.lerp(DIRT_COLOR[state.surface] ?? DIRT_COLOR.dirt, Math.min(1, rate * v * dt * 3));
+        }
       }
     }
   };

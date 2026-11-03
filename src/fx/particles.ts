@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SUN_DIR } from '../core/atmosphere';
 
 /**
  * One pooled GPU point-sprite system for every soft particle (dust, mud spray, splashes, exhaust,
@@ -70,6 +71,10 @@ export class ParticleSystem {
     geo.setAttribute('position', this.pos);
     geo.setAttribute('aSize', this.size);
     geo.setAttribute('aColor', this.col);
+    // Round 2: a fixed random per pool slot (puff shape noise on High/Ultra).
+    const seed = new Float32Array(max);
+    for (let i = 0; i < max; i++) seed[i] = (i * 0.618034) % 1;
+    geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
     this.material = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
@@ -82,11 +87,16 @@ export class ParticleSystem {
       vertexShader: /* glsl */ `
         attribute float aSize;
         attribute vec4 aColor;
+        attribute float aSeed;
         uniform float uScale;
         uniform float uMaxPx;
         varying vec4 vColor;
+        varying vec3 vSunV;
+        varying float vSeed;
         #include <fog_pars_vertex>
         void main() {
+          vSunV = normalize((viewMatrix * vec4(${SUN_DIR.x.toFixed(4)}, ${SUN_DIR.y.toFixed(4)}, ${SUN_DIR.z.toFixed(4)}, 0.0)).xyz);
+          vSeed = aSeed;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           gl_Position = projectionMatrix * mvPosition;
           float d = -mvPosition.z;
@@ -99,13 +109,31 @@ export class ParticleSystem {
         }`,
       fragmentShader: /* glsl */ `
         varying vec4 vColor;
+        varying vec3 vSunV;
+        varying float vSeed;
         #include <fog_pars_fragment>
+        #ifdef LIT
+        float pn(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          vec4 h = fract(sin(vec4(dot(i, vec2(127.1, 311.7)), dot(i + vec2(1, 0), vec2(127.1, 311.7)), dot(i + vec2(0, 1), vec2(127.1, 311.7)), dot(i + vec2(1, 1), vec2(127.1, 311.7)))) * 43758.5453);
+          return mix(mix(h.x, h.y, f.x), mix(h.z, h.w, f.x), f.y); }
+        #endif
         void main() {
           vec2 c = gl_PointCoord * 2.0 - 1.0;
           float r = dot(c, c);
+          #ifdef LIT
+          // Volumetric-looking puff (High/Ultra): lumpy outline, a sphere normal lit by the sun with wrap
+          // lighting, darker underside — dust and spray look like soft lit clouds instead of flat discs.
+          float lump = pn(c * 2.2 + vSeed * 37.0) * 0.55 + pn(c * 5.0 - vSeed * 19.0) * 0.45;
+          float a = vColor.a * (1.0 - smoothstep(0.15, 1.0, r + (lump - 0.5) * 0.55));
+          if (a < 0.004) discard;
+          vec3 n = vec3(c.x, -c.y, sqrt(max(1.0 - r, 0.0)));
+          float lit = 0.55 + 0.75 * clamp(dot(n, vSunV) * 0.5 + 0.5, 0.0, 1.0) - 0.12 * max(c.y, 0.0);
+          gl_FragColor = vec4(vColor.rgb * lit * (0.9 + 0.2 * lump), a);
+          #else
           float a = vColor.a * (1.0 - smoothstep(0.3, 1.0, r));
           if (a < 0.004) discard;
           gl_FragColor = vec4(vColor.rgb, a);
+          #endif
           #include <tonemapping_fragment>
           #include <colorspace_fragment>
           #include <fog_fragment>
@@ -119,6 +147,15 @@ export class ParticleSystem {
 
   get count(): number {
     return this.alive;
+  }
+
+  /** Round 2: lit, lumpy puffs on High/Ultra (`look.pbr`). */
+  setLit(on: boolean): void {
+    const has = 'LIT' in this.material.defines;
+    if (has === on) return;
+    if (on) this.material.defines.LIT = 1;
+    else delete this.material.defines.LIT;
+    this.material.needsUpdate = true;
   }
 
   /** Pixel scale for metre-sized sprites: drawing-buffer height / (2·tan(fov/2)). */

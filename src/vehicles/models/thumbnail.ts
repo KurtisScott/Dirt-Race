@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import type { VehicleKind } from '../../core/types';
 import { VEHICLES, VEHICLE_KINDS } from '../catalog';
 import { paramsFromSpec } from '../params';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { look } from '../../core/look';
 import { buildVehicleModel } from './build';
 
 export interface VehicleThumbnail {
@@ -37,7 +39,18 @@ export function renderVehicleThumbnails(
       renderer.toneMappingExposure = 1.1;
       renderer.setClearColor(0x000000, 0);
       const scene = new THREE.Scene();
-      scene.add(new THREE.HemisphereLight(0xdfefff, 0x6b5a40, 1.5));
+      // Round 2 (High/Ultra): the PBR car materials need an environment to reflect — a soft studio room.
+      let envRT: THREE.WebGLRenderTarget | null = null;
+      if (look.pbr) {
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        const room = new RoomEnvironment();
+        envRT = pmrem.fromScene(room, 0.04);
+        room.dispose();
+        pmrem.dispose();
+        scene.environment = envRT.texture;
+        scene.environmentIntensity = 0.9;
+      }
+      scene.add(new THREE.HemisphereLight(0xdfefff, 0x6b5a40, look.pbr ? 0.6 : 1.5));
       const sun = new THREE.DirectionalLight(0xfff3dd, 2.6);
       sun.position.set(-4, 7, 6);
       scene.add(sun);
@@ -74,6 +87,7 @@ export function renderVehicleThumbnails(
         model.dispose();
       }
       shadowTex.dispose();
+      envRT?.dispose();
     } catch (err) {
       console.warn('[vehicles] thumbnail render failed', err);
     } finally {
@@ -88,7 +102,7 @@ export function renderVehicleThumbnails(
 }
 
 function key(kind: VehicleKind, paint: number): string {
-  return `${kind}:${paint}`;
+  return `${kind}:${paint}:${look.pbr ? 'pbr' : 'classic'}`;
 }
 
 function radialTexture(): THREE.CanvasTexture {
