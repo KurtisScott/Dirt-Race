@@ -2,7 +2,7 @@
 // frame (scene + shadow + post passes) and GPU memory actually allocated through WebGL (textures, render
 // targets, renderbuffers, vertex/index buffers), tracked by wrapping the WebGL2 allocation calls.
 // Software GL (SwiftShader) → frame times are NOT representative of an iPad; counts and memory are.
-// Usage: npm run build && node scripts/perf-stats.mjs   (LEVELS=low,medium,high,ultra  ZONES=town,farm,…)
+// Usage: npm run build && node scripts/perf-stats.mjs   (LEVELS=low,medium,high,ultra  ZONES=town,farm,…  RACES=5  DPR=2  TOP=1)
 import { chromium } from 'playwright-core';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -147,6 +147,37 @@ for (const level of LEVELS) {
     console.log(`${level.padEnd(6)} ${zone.padEnd(7)} calls ${String(r.calls).padStart(4)}  tris ${(r.tris / 1000).toFixed(0).padStart(5)}k  GPU tex ${mb(r.gpu.textures).padStart(4)} MB  rb ${mb(r.gpu.renderbuffers).padStart(3)} MB  buffers ${mb(r.gpu.buffers).padStart(3)} MB  total ${mb(r.gpu.textures + r.gpu.renderbuffers + r.gpu.buffers).padStart(4)} MB  (pixel ratio ${r.px})`);
   }
   console.log(`${level.padEnd(6)} load ${loadS.toFixed(1)} s (software GL)${errors.length ? '  ERRORS: ' + errors.join(' | ') : ''}`);
+  // RACES=5: Race Again N times (each car damaged, then wrecked) and print GPU memory per race (leak check
+  // at this level; the smoke test does the same on Low through the UI).
+  const races = Number(process.env.RACES ?? 0);
+  const perRace = [];
+  for (let round = 1; round <= races; round++) {
+    await page.evaluate(() => {
+      const r = window.__dirt.race;
+      r.config.timeLimitS = r.elapsedS + 0.5;
+      window.__dirt.renderer.hold = true;
+    });
+    await page.waitForSelector('[data-screen="results"]:not([hidden])', { timeout: 120000 });
+    await page.click('[data-tap="again"]');
+    await page.waitForSelector('.vspin-go.ready', { timeout: 120000 });
+    await page.click('[data-tap="spin-go"]', { force: true });
+    await page.waitForFunction(() => window.__dirt.race.phase === 'racing', null, { timeout: 90000, polling: 100 });
+    const m = await page.evaluate(async () => {
+      const d = window.__dirt;
+      d.player.addDamage(26, { x: 0.2, y: 0, z: 1 });
+      d.player.addDamage(26, { x: -1, y: 0, z: 0.2 });
+      d.renderer.hold = false;
+      for (let i = 0; i < 2; i++) await new Promise((r) => requestAnimationFrame(r));
+      d.renderer.hold = true;
+      d.player.addDamage(30, { x: 0, y: 0, z: 1 });
+      d.player.addDamage(30, { x: 0, y: 0, z: -1 });
+      const i = d.renderer.renderer.info;
+      const g = globalThis.__gpu;
+      return { geo: i.memory.geometries, tex: i.memory.textures, prog: i.programs?.length ?? 0, mb: Math.round((g.textures + g.renderbuffers + g.buffers) / 1048576) };
+    });
+    perRace.push(m);
+  }
+  if (races) console.log(`${level.padEnd(6)} per Race Again: ${perRace.map((m) => `geo ${m.geo} tex ${m.tex} prog ${m.prog} GPU ${m.mb} MB`).join(' | ')}`);
   await page.close();
 }
 await browser.close();

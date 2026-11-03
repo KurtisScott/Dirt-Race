@@ -409,7 +409,7 @@ The family chose max realism by default, accepting lower frame rates on the A12 
 - **Post (`core/post.ts`, `postprocessing` + `n8ao`):** Ultra: N8AO (half res, radius 1.4 m, intensity 1.6, no transparency pass), radial speed blur from 60 km/h (subtle, edges only), mip bloom (HDR threshold 1.1, half res; lamps and brake lights are HDR so they glow), SMAA medium. High: bloom + grade + SMAA low. No DOF. N8AO 2.0.1's multi-target helper breaks on three r187 (`texture` returns an array); `patchN8AOTargets` restores the standard getter.
 
 ### Terrain and roads
-- **No downloadable CC0 texture set was usable** (see ASSETS.md), so `scripts/gen-textures.ts` generates a photographic-style set at build time: heightfields from tileable noise with scattered stones / grass blades / leaves / cracks, baked cavity AO, normals from height, mean albedo calibrated to real-world values. 12 layers × albedo (1024 Ultra / 512 High) + normal/height (512), asphalt likewise. 9 MB of WebP, committed, regenerated only when the script changes.
+- **No downloadable CC0 texture set was usable** (see ASSETS.md), so `scripts/gen-textures.ts` generates a photographic-style set at build time: heightfields from tileable noise with scattered stones / grass blades / leaves / cracks, baked cavity AO, normals from height, mean albedo calibrated to real-world values. 12 layers × albedo (1024 Ultra / 512 High) + normal/height (512), asphalt likewise. 6.1 MB of WebP, committed, regenerated only when the script changes.
 - **PBR splat** (`world/terrainPBR.ts`): height-based blending (stones poke through dirt), per-layer tile/roughness/normal strength, second large-scale sample far away + procedural macro variation against tiling, triplanar rock on steep slopes, mud puddles (dark, glossy, flat → mirror the sky), wet river bed, snow sparkle, wheel ruts and loose edge berms from a new per-vertex `aRoad` (road weight, lateral).
 - **Road readability fix (all levels):** new 12th layer `track` (packed hardpack). Desert road = 80 % track (was sand on sand); snowy-pass road = mostly track/gravel with a little snow + dark slush ruts on High/Ultra (was pale snow-gravel). Orange-and-black snow poles and red-topped wooden posts line both edges on the pass and through the desert. Rock on valley walls only from slope 0.8–1.25 (was 0.65–0.95) so more of the walls stay grassy.
 - **Water:** 12 columns across with per-vertex depth: clear sandy-green shallows → dark teal, opacity from depth, animated foam lines at the banks, two scrolling normal layers, sky reflections (PBR).
@@ -423,14 +423,25 @@ The family chose max realism by default, accepting lower frame rates on the A12 
 ### Cars
 - Paint: clearcoat MeshPhysicalMaterial, metalness 0.22, metallic flake normals under the coat; **dirt build-up** on the lower body from the surface driven on (mud fast, dust/sand/snow slower, colour follows the surface, water rinses some off). Glass: dark, clear-coated, Fresnel reflections. Chrome 0.08 roughness. Tyres are a separate mesh with procedural tread grooves and sidewall rings. Lamps HDR (×2.2), brake lights ×2.6 when braking (bloom). A smaller contact-shadow pad stays under each car on High/Ultra. Damage visuals untouched (dents/scratches edit geometry/vertex colours that the new paint still uses; crack decals, smoke unchanged). Spin-screen thumbnails get a RoomEnvironment on High/Ultra.
 
-### Performance (scripts/perf-stats.mjs, headless SwiftShader at the iPad's DPR 2; frame times there are meaningless)
-Draw calls per frame include shadow and post passes; GPU memory = everything allocated through WebGL (textures + render targets + vertex/index buffers), measured after driving through all zones.
+### Look fixes after the first screenshot review (graphics pass, part 2)
+- Pines read as black silhouettes: the needle atlas is dark (≈ real conifer albedo), so the per-tree tint is now near-white green instead of a mid green.
+- Shaded valley walls and car undersides turned lavender: the environment's below-horizon "ground" was a dark neutral grey, so shade saw only blue sky. It is now a warm, brighter bounce colour (`ATMOS.ground` 0x7c7656).
+- Rows of yellow dashes in grass a few tiles away (the dry patches inside a 3.2 m texture tile line up at grazing angles): each layer fades toward its own mean colour (smallest mip) from 7 m to 40 m (up to 62 %); the procedural macro variation carries the large-scale look. Gravel is also pulled 30 % toward its mean near the car (salt-and-pepper shimmer).
+- Mud puddles repeated with the 5 m texture tile: the water line now wanders with a slow world-space noise (dry stretches, scattered puddles, a few pools) and the shoreline is roughened by a finer noise.
+- Checked and left alone: the end-jump "mid-air" shot where the bonus-gate banner fills the screen is the chase camera passing through the gate (same on Low and before the pass); snowy and desert roads stay readable on every level.
 
-| Level | Pixel ratio | Draw calls (zones) | Triangles | GPU memory |
-| --- | --- | --- | --- | --- |
-| Low | 1 | 41–59 | 47–81k | 16 → 39 MB |
-| Medium | 1.25 | 85–137 | 140–201k | 30 → 69 MB |
-| High | 1.5 | 117–269 | 356–751k | 227 → 347 MB |
-| Ultra | 1.5 | 137–341 | 438k–1.06M | 368 → ~470 MB |
+### Performance (`scripts/perf-stats.mjs`, headless Chrome + SwiftShader at the iPad's DPR 2; frame times there are meaningless)
+Per frame, including shadow and post passes; GPU memory = everything allocated through WebGL (textures + render targets + vertex/index buffers) after driving through the zones in order (geometry grows as chunks are first drawn). Busiest zones shown.
 
-Low/Medium draw calls match the pre-Round-2 numbers (Low farm 44 → 43–45); triangles +5–10 % (house trim, marker posts). Ultra's biggest items: shadow map 72 MB, terrain albedo array 64 MB (+16 MB normals), post targets ~100 MB, geometry up to ~150 MB once every chunk has been drawn. That is within what Safari allows a tab on the 3 GB A12 / 4 GB A10X (~1–1.5 GB), but **real iPad frame rates are unmeasured** (expect roughly 15–25 fps on Ultra on the A12; the slow prompt exists for that). Smoke still checks no texture/geometry/body growth over 5 Race Agains (on Low).
+| Level | Pixel ratio | Draw calls: farm / snow / town / jump (all zones) | Triangles (all zones) | GPU memory: textures + targets / buffers / total | After 5 Race Agains |
+| --- | --- | --- | --- | --- | --- |
+| Low | 1 | 43 / 43 / 41 / 59 (41–59) | 45–79k | 12–16 / 4–24 / **15 → 39 MB** | 42 MB ×5, flat |
+| Medium | 1.25 | 128 / 121 / 104 / 139 (87–139) | 143–205k | 22–26 / 8–43 / **30 → 69 MB** | 72 MB ×5, flat |
+| High | 1.5 | 271 / 240 / 238 / 218 (119–271) | 357–752k | 183–187 / 45–160 / **227 → 347 MB** | 351–352 MB ×5, flat |
+| Ultra | 1.5 | 330 / 323 / 303 / 232 (127–330) | 435k–1.05M | 307–311 / 61–152 / **368 → 463 MB** | 467–468 MB ×5, flat |
+
+Before the pass (commit 206464f, same script): Low 41–59 draw calls, 44–69k triangles, 17 → 40 MB; Medium 88–138 calls, 134–184k triangles, 32 → 70 MB. So **Low and Medium cost the same as before** (draw calls equal, triangles +0–10 % from house trim and the road marker posts, memory equal or slightly lower). Geometry, texture and program counts and GPU bytes stay flat over 5 Race Agains on every level (`RACES=5`); the smoke test checks the same on Low through the UI.
+
+Ultra's biggest items: shadow map 72 MB (3072², colour + depth), terrain albedo array 64 MB (12 × 1024² + mips) + 16 MB normal/height (512²), post targets ~100 MB at DPR 1.5, geometry up to ~150 MB once every chunk has been drawn. That is well inside what Safari gives a tab on the 3 GB A12 / 4 GB A10X iPads (~1–1.5 GB), but **real iPad frame rates are unmeasured** (expect roughly 15–25 fps on Ultra on the A12; the one-time slow prompt exists for that).
+
+**Download and load:** `dist/` 11.9 MB; the service worker precaches 23 entries, 11.6 MB (was 5.2 MB before the pass): JS 5.6 MB (Rapier 4.3 MB, game 0.7 MB, three 0.6 MB; ~2.1 MB gzipped), PBR textures 6.1 MB of WebP (terrain albedo 3.7 MB at 1024 + 1.0 MB at 512, normal/height 1.0 MB, asphalt 0.4 MB), icons. Well under the ~40 MB budget; offline boot from the cache is checked by the smoke test. Load to "ready" in headless SwiftShader on 2 CPU cores: Low 6.4 s, Medium 6.1 s, High 11.6 s, Ultra 12.1–13.5 s (course build 2.7 s on Low vs 5.4 s on Ultra: decoding the texture set and building the HQ props); an iPad's CPU should be several times faster. The old build can't be timed the same way (it renders every frame while loading, which dominates under software GL).
